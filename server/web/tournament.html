@@ -43,7 +43,12 @@
         <form class="join-card" id="join-form" autocomplete="off" hidden>
           <div class="group-title">Enter the tournament</div>
           <label class="field"><span class="k">Name</span><input name="name" type="text" maxlength="36" placeholder="Your name or team" autocomplete="off"></label>
-          <label class="field"><span class="k">Strategy file</span><input type="file" id="join-file" name="file"></label>
+          <label class="field"><span class="k">Strategy</span><input type="file" id="join-file" name="file" multiple></label>
+          <div class="pick-row">
+            <button class="btn small" type="button" id="join-folder-btn">Choose a folder…</button>
+            <input type="file" id="join-folder" webkitdirectory directory multiple hidden>
+            <span class="picked" id="join-picked"></span>
+          </div>
           <div class="field"><span class="k">Face</span><div class="faces" id="faces"></div></div>
           <ol class="steps" id="upload-steps" hidden aria-live="polite"></ol>
           <p class="hint" id="join-hint" style="margin:0;font-size:12px;color:var(--secondary)"></p>

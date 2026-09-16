@@ -5,6 +5,7 @@ The point of these tests is that no language is special-cased anywhere: a
 folder with a manifest is all the server needs.
 Run:  python3 -m pytest tests/ -q"""
 
+import io
 import json
 import os
 import re
@@ -12,6 +13,8 @@ import stat
 import sys
 import threading
 import time
+import uuid
+import zipfile
 
 import pytest
 
@@ -49,7 +52,7 @@ def test_every_client_folder_has_a_usable_manifest():
 def test_registry_finds_every_language():
     reg = cl.ClientRegistry(ROOT, [CLIENTS])
     languages = {spec.language for spec in reg.values()}
-    assert {"Python", "C++", "Java", "q", "JavaScript", "Ruby", "Shell"} <= languages
+    assert {"Python", "C++", "Java", "q", "JavaScript", "Ruby", "Shell", "Julia"} <= languages
     assert reg.errors == []
     # Python is always available: it is running these tests
     assert reg["client-python"].available
@@ -369,16 +372,55 @@ def start_ready_matches(base, tid):
     return False
 
 
-def post_file(base, filename, data, team):
+def post_file(base, filename, data, team, entry=""):
     """Raw-body upload, exactly what the browser's fetch(body: file) sends."""
     import urllib.error
     q = f"?filename={urllib.parse.quote(filename)}&team={urllib.parse.quote(team)}"
+    if entry:
+        q += f"&entry={urllib.parse.quote(entry)}"
     req = urllib.request.Request(base + "/api/uploads" + q, data=data, method="POST")
     try:
         with urllib.request.urlopen(req, timeout=30) as r:
             return r.status, json.loads(r.read())
     except urllib.error.HTTPError as e:
         return e.code, json.loads(e.read())
+
+
+def post_files(base, files, team, entry=""):
+    """multipart/form-data upload, exactly what the browser's FormData sends:
+    one part per file, named by its path inside the submission."""
+    import urllib.error
+    boundary = "----cardnim" + uuid.uuid4().hex
+    body = io.BytesIO()
+    for path, data in files:
+        body.write(f"--{boundary}\r\n".encode())
+        body.write(f'Content-Disposition: form-data; name="files"; filename="{path}"\r\n'.encode())
+        body.write(b"Content-Type: application/octet-stream\r\n\r\n")
+        body.write(data)
+        body.write(b"\r\n")
+    if entry:
+        body.write(f"--{boundary}\r\n".encode())
+        body.write(b'Content-Disposition: form-data; name="entry"\r\n\r\n')
+        body.write(entry.encode() + b"\r\n")
+    body.write(f"--{boundary}--\r\n".encode())
+    q = f"?team={urllib.parse.quote(team)}"
+    req = urllib.request.Request(base + "/api/uploads" + q, data=body.getvalue(), method="POST",
+                                 headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            return r.status, json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        return e.code, json.loads(e.read())
+
+
+def zipped(files):
+    """[(path, bytes)] -> the bytes of a .zip holding them, compressed the way
+    a team's own zip would be."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as archive:
+        for path, data in files:
+            archive.writestr(path, data)
+    return buf.getvalue()
 
 
 @pytest.fixture(scope="module")
@@ -557,13 +599,15 @@ def test_every_accepted_extension_uploads_and_plays(upload_server):
     real game -- so /api/uploads never claims a language it cannot run."""
     base, uploads, store = upload_server
     _, info = call(base, "GET", "/api/uploads")
-    extensions = info["accept"].split(",")
+    extensions = [l["extension"] for l in info["languages"]]
+    assert ".zip" in info["accept"], "an archive is offered too, but it is not a language"
 
     # the repo's own sample client stands in for a team's file
     sample = {".py": "python/client.py", ".js": "javascript/client.js",
               ".ts": "typescript/client.ts", ".rb": "ruby/client.rb",
               ".R": "r/client.R", ".pl": "perl/client.pl", ".php": "php/client.php",
               ".lua": "lua/client.lua", ".sh": "shell/client.sh", ".q": "q/client.q",
+              ".jl": "julia/client.jl",
               ".c": "c/client.c", ".cpp": "cpp/client.cpp", ".cc": "cpp/client.cpp",
               ".go": "go/client.go", ".rs": "rust/client.rs", ".java": "java/Client.java"}
     assert set(sample) >= set(extensions), \
@@ -622,3 +666,333 @@ def test_a_java_upload_keeps_its_own_class_name(upload_server):
             break
         time.sleep(0.1)
     assert state["status"] == "finished" and any(m["seat"] == 2 for m in state["moves"])
+
+
+# ============================================================ submissions of several files
+#
+# A team's bot is a folder, not a file: a strategy in one file, the plumbing in
+# another, a table of openings in a third.  The server keeps the layout it is
+# sent, works out which file starts the bot, and writes the manifest itself.
+
+EXAMPLE = os.path.join(ROOT, "examples", "scout")
+
+
+def example_files(prefix=""):
+    """The three-file example submission in the repository, as it would be
+    picked in a browser."""
+    return [(prefix + name, open(os.path.join(EXAMPLE, name), "rb").read())
+            for name in sorted(os.listdir(EXAMPLE)) if name.endswith(".py")]
+
+
+def play_out(base, kind, stones=30, cards=10, timeout=60):
+    """Seat `kind` against the greedy bot and play to the end.  Outputs: the
+    final state."""
+    _, game = call(base, "POST", "/api/games",
+                   {"stones": stones, "cards": cards, "time_limit": 60})
+    gid = game["id"]
+    call(base, "POST", f"/api/games/{gid}/bot", {"kind": "greedy", "seat": 1, "delay": 0})
+    status, state = call(base, "POST", f"/api/games/{gid}/bot", {"kind": kind, "seat": 2})
+    assert status == 200, state
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        _, state = call(base, "GET", f"/api/games/{gid}")
+        if state["status"] == "finished":
+            break
+        time.sleep(0.1)
+    return state
+
+
+def test_a_submission_of_several_files_is_kept_whole_and_plays(upload_server):
+    """The restriction that is gone: a bot may span as many files as a team
+    likes.  The example imports its strategy from one neighbour and its HTTP
+    from another, so it only runs at all if the whole folder arrived."""
+    base, uploads, _ = upload_server
+    status, up = post_files(base, example_files(), "Team Scout")
+    assert status == 201, up
+    assert up["files"] == 3 and up["file"] == "main.py"
+    assert up["names"] == ["main.py", "protocol.py", "strategy.py"]
+    folder = os.path.join(uploads, "team-scout")
+    assert sorted(os.listdir(folder)) == [cl.MANIFEST, "main.py", "protocol.py", "strategy.py"]
+
+    state = play_out(base, up["kind"])
+    assert state["status"] == "finished", state["status"]
+    assert any(m["seat"] == 2 for m in state["moves"]), "the submission never moved"
+
+
+def test_a_zip_is_unpacked_and_the_folder_it_wraps_is_dropped(upload_server):
+    """Teams zip a folder, so what arrives is "my-bot/main.py".  The wrapping
+    folder is removed, or the entry point would be one level below where the
+    manifest says it is."""
+    base, uploads, _ = upload_server
+    status, up = post_file(base, "my-bot.zip", zipped(example_files("my-bot/")), "Team Zip")
+    assert status == 201, up
+    assert up["file"] == "main.py" and up["names"] == ["main.py", "protocol.py", "strategy.py"]
+    assert os.path.isfile(os.path.join(uploads, "team-zip", "main.py"))
+    state = play_out(base, up["kind"])
+    assert state["status"] == "finished" and any(m["seat"] == 2 for m in state["moves"])
+
+
+def test_a_zip_keeps_the_folders_inside_it(upload_server):
+    """Only the one wrapping folder goes; a team's own layout is theirs."""
+    base, uploads, _ = upload_server
+    files = [("bot/main.py", b"import bits.brain\n"), ("bot/bits/brain.py", b"X = 1\n"),
+             ("bot/bits/__init__.py", b"")]
+    status, up = post_file(base, "bot.zip", zipped(files), "Team Nested")
+    assert status == 201, up
+    assert up["names"] == ["bits/__init__.py", "bits/brain.py", "main.py"]
+    assert os.path.isfile(os.path.join(uploads, "team-nested", "bits", "brain.py"))
+
+
+def test_which_file_starts_the_bot(upload_server):
+    """Running the wrong file in a competition is worse than refusing to guess:
+    the server takes the name the team gave, then an obvious name, then the
+    file with a main() in it, and otherwise asks."""
+    base, _, _ = upload_server
+    runner = b"if __name__ == '__main__':\n    pass\n"
+
+    _, up = post_files(base, [("helper.py", b"X = 1\n"), ("main.py", runner)], "Team Obvious")
+    assert up["file"] == "main.py"
+
+    status, err = post_files(base, [("alpha.py", b"X = 1\n"), ("beta.py", b"Y = 2\n")], "Team Vague")
+    assert status == 400 and "which file starts your bot" in err["error"]
+    assert "alpha.py" in err["error"] and "beta.py" in err["error"]
+
+    _, up = post_files(base, [("alpha.py", b"X = 1\n"), ("beta.py", b"Y = 2\n")], "Team Vague",
+                       entry="beta.py")
+    assert up["file"] == "beta.py"
+
+    # and the same answer works for a zip, where the page cannot look inside
+    _, up = post_file(base, "vague.zip", zipped([("bot/alpha.py", b"X = 1\n"),
+                                                 ("bot/beta.py", b"Y = 2\n")]),
+                      "Team Zipvague", entry="bot/beta.py")
+    assert up["file"] == "beta.py", up
+
+    _, up = post_files(base, [("alpha.py", runner), ("beta.py", b"Y = 2\n")], "Team Main")
+    assert up["file"] == "alpha.py", "the file with the main() in it should win"
+
+    status, err = post_files(base, [("notes.txt", b"hello"), ("table.csv", b"1,2\n")], "Team Data")
+    assert status == 400 and "run" in err["error"]
+
+
+def test_the_entry_point_may_sit_in_a_folder(upload_server):
+    """A submission laid out src/main.py is run from the folder it was sent in,
+    so its neighbours are still beside it."""
+    base, uploads, _ = upload_server
+    files = [("src/" + name, data) for name, data in example_files()]
+    files.append(("README.md", b"Team notes\n"))
+    status, up = post_files(base, files, "Team Src")
+    assert status == 201, up
+    assert up["file"] == "src/main.py"
+    assert os.path.isfile(os.path.join(uploads, "team-src", "src", "protocol.py"))
+    state = play_out(base, up["kind"])
+    assert state["status"] == "finished" and any(m["seat"] == 2 for m in state["moves"])
+
+
+def test_a_submission_cannot_escape_its_folder(upload_server):
+    """Path separators, `..` and absolute paths are all refused, whether they
+    come from a browser or from inside a zip."""
+    base, uploads, _ = upload_server
+    files = [("main.py", b"print(1)\n"), ("../../../etc/passwd", b"x"),
+             ("/etc/shadow", b"x"), ("a/../../b.py", b"x"), ("..\\\\..\\\\win.py", b"x")]
+    status, up = post_file(base, "evil.zip", zipped(files), "Team Escape")
+    assert status == 201, up
+    assert up["names"] == ["main.py"], up["names"]
+    root = os.path.realpath(uploads)
+    for folder, _dirs, names in os.walk(root):
+        for name in names:
+            assert os.path.realpath(os.path.join(folder, name)).startswith(root + os.sep)
+
+
+def test_a_submission_cannot_bring_its_own_manifest(upload_server):
+    """The manifest says which commands the server runs, so it is the one file
+    a submission may never provide."""
+    base, uploads, _ = upload_server
+    hostile = json.dumps({"language": "Python", "file": "main.py",
+                          "run": ["/bin/sh", "-c", "echo owned > /tmp/cardnim-pwned"]}).encode()
+    status, up = post_files(base, [("main.py", b"print(1)\n"), (cl.MANIFEST, hostile)], "Team Sneaky")
+    assert status == 201, up
+    assert up["names"] == ["main.py"], "the uploaded manifest should not have been written"
+    with open(os.path.join(uploads, "team-sneaky", cl.MANIFEST), encoding="utf-8") as fh:
+        manifest = json.load(fh)
+    assert manifest["run"] == ["{python}", "{file}"]
+    assert manifest["kind"] == "upload-team-sneaky"
+
+
+def test_the_limits_on_a_submission(upload_server):
+    """Counted in files and in bytes, and a zip is measured by what it would
+    unpack to, not by what arrived."""
+    base, _, _ = upload_server
+    many = [("main.py", b"print(1)\n")] + [(f"f{i}.txt", b"x") for i in range(cl.UPLOAD_MAX_FILES + 1)]
+    status, err = post_files(base, many, "Team Many")
+    assert status == 413 and "limit" in err["error"], err
+
+    fat = [("main.py", b"print(1)\n"), ("data.txt", b"x" * (cl.UPLOAD_MAX_BYTES + 1))]
+    status, err = post_files(base, fat, "Team Fat")
+    assert status == 413, err
+
+    bomb = zipped([("main.py", b"print(1)\n"),
+                   ("zeros.bin", b"\0" * (cl.UPLOAD_MAX_TOTAL_BYTES + 1))])
+    assert len(bomb) < 200 * 1024, "the point of this test is that it compresses small"
+    status, err = post_file(base, "bomb.zip", bomb, "Team Bomb")
+    assert status == 413 and "KB" in err["error"], err
+
+    status, err = post_files(base, [("main.py", b"")], "Team Empty")
+    assert status == 400, err
+
+
+def test_re_uploading_replaces_the_whole_submission(upload_server):
+    """A team that splits their bot in three and then goes back to one file
+    must not be left with the other two lying around."""
+    base, uploads, _ = upload_server
+    post_files(base, example_files(), "Team Again")
+    folder = os.path.join(uploads, "team-again")
+    assert len(os.listdir(folder)) == 4
+    status, up = post_file(base, "solo.py", UPLOADED_STRATEGY.encode(), "Team Again")
+    assert status == 201 and up["files"] == 1
+    assert sorted(os.listdir(folder)) == [cl.MANIFEST, "solo.py"]
+
+
+def test_a_compiled_submission_compiles_every_file(upload_server):
+    """The C++ client split over two translation units: the build has to be
+    handed both, not just the one the manifest calls the entry point."""
+    base, _, _ = upload_server
+    source = open(os.path.join(CLIENTS, "cpp", "client.cpp"), encoding="utf-8").read()
+    start = source.index("static int choose_card(")
+    end = source.index("\n}\n", start) + 3
+    strategy = source[start:end].replace("static int choose_card(", "int choose_card(", 1)
+    files = [
+        ("main.cpp", (source[:start] + '#include "strategy.h"\n' + source[end:]).encode()),
+        ("strategy.cpp", ('#include "strategy.h"\n' + strategy).encode()),
+        ("strategy.h", b'#pragma once\n#include <vector>\n'
+                       b'int choose_card(int stones, const std::vector<int>& my_cards,'
+                       b' const std::vector<int>& opp_cards);\n'),
+    ]
+    status, up = post_files(base, files, "Team Units")
+    assert status == 201, up
+    if not up["available"]:
+        pytest.skip("no C++ compiler here: " + up["reason"])
+    state = play_out(base, up["kind"])
+    assert state["status"] == "finished", state["status"]
+    assert any(m["seat"] == 2 for m in state["moves"]), "the two-file C++ bot never moved"
+
+
+def test_a_java_submission_may_span_classes(upload_server):
+    """Two classes, one of them the entry point javac is named after."""
+    base, _, _ = upload_server
+    source = open(os.path.join(CLIENTS, "java", "Client.java"), encoding="utf-8").read()
+    start = source.index("    static int chooseCard(")
+    end = source.index("\n    }\n", start) + len("\n    }\n")
+    delegate = ("    static int chooseCard(int stones, List<Integer> myCards, List<Integer> oppCards) {\n"
+                "        return Strategy.chooseCard(stones, myCards, oppCards);\n    }\n")
+    files = [("Client.java", (source[:start] + delegate + source[end:]).encode()),
+             ("Strategy.java", ("import java.util.List;\n\nclass Strategy {\n"
+                                + source[start:end] + "}\n").encode())]
+    status, up = post_files(base, files, "Team Classes")
+    assert status == 201, up
+    assert up["file"] == "Client.java"
+    if not up["available"]:
+        pytest.skip("no JDK here: " + up["reason"])
+    state = play_out(base, up["kind"])
+    assert state["status"] == "finished" and any(m["seat"] == 2 for m in state["moves"])
+
+
+# ------------------------------------------------------------ the pieces, on their own
+
+def test_a_java_submission_that_declares_a_package_is_run_by_its_full_name(tmp_path):
+    """javac puts team/x/Strategy.class under the output root and java wants
+    the class by its full name, so the manifest has to read the declaration."""
+    saved = cl.save_bundle(str(tmp_path), [("Strategy.java", b"package team.x;\npublic class Strategy {}"),
+                                           ("Board.java", b"package team.x;\nclass Board {}")], "Team P")
+    with open(os.path.join(saved["folder"], cl.MANIFEST), encoding="utf-8") as fh:
+        manifest = json.load(fh)
+    assert saved["file"] == "Strategy.java"
+    assert manifest["run"][-1] == "team.x.Strategy"
+    assert manifest["output"] == "out/team/x/Strategy.class"
+    assert manifest["sources"] == ["**/*.java"]
+
+
+def test_a_go_module_is_built_as_a_package(tmp_path):
+    """A list of files is not a module: a submission with a go.mod has to be
+    built as a package or its own sub-packages are never found."""
+    saved = cl.save_bundle(str(tmp_path), [("main.go", b"package main\nfunc main() {}\n"),
+                                           ("go.mod", b"module bot\n\ngo 1.21\n")], "Team Mod")
+    with open(os.path.join(saved["folder"], cl.MANIFEST), encoding="utf-8") as fh:
+        manifest = json.load(fh)
+    assert manifest["build"] == ["{go}", "build", "-o", "{out}", "."]
+    assert manifest["sources"] == ["**/*.go"]
+
+
+def test_a_cargo_project_is_built_with_cargo(tmp_path):
+    """A Cargo.toml means the team expects cargo, and the binary it produces is
+    named in that file."""
+    saved = cl.save_bundle(str(tmp_path), [
+        ("src/main.rs", b"fn main() {}\n"),
+        ("Cargo.toml", b'[package]\nname = "clever-bot"\nversion = "0.1.0"\n')], "Team Cargo")
+    with open(os.path.join(saved["folder"], cl.MANIFEST), encoding="utf-8") as fh:
+        manifest = json.load(fh)
+    assert saved["file"] == "src/main.rs"
+    assert manifest["tools"] == {"cargo": "cargo"}
+    assert manifest["output"] == "target/release/clever-bot"
+    assert manifest["run"] == ["{out}"]
+
+
+def test_the_names_a_submission_may_not_use():
+    """safe_member is the one place a path from outside is turned into one that
+    can only land inside the team's folder."""
+    assert cl.safe_member("main.py") == "main.py"
+    assert cl.safe_member("src/bits/brain.py") == "src/bits/brain.py"
+    assert cl.safe_member("src\\\\bits\\\\brain.py") == "src/bits/brain.py"
+    for bad in ["../x.py", "/etc/passwd", "C:/x.py", "a/../../b.py", "__MACOSX/x.py",
+                ".DS_Store", "x/.DS_Store", cl.MANIFEST, "", "a/" * 20 + "deep.py"]:
+        assert cl.safe_member(bad) == "", bad
+    assert cl.safe_member("we ird;name.py") == "we_ird_name.py"
+
+
+def test_only_a_wrapping_folder_is_stripped():
+    strip = cl._strip_common_root
+    assert strip([("bot/main.py", b""), ("bot/x.py", b"")]) == [("main.py", b""), ("x.py", b"")]
+    assert strip([("main.py", b"")]) == [("main.py", b"")]
+    # two roots, or a file at the top: nothing to unwrap
+    assert strip([("a/x.py", b""), ("b/y.py", b"")]) == [("a/x.py", b""), ("b/y.py", b"")]
+    assert strip([("main.py", b""), ("bits/x.py", b"")]) == [("main.py", b""), ("bits/x.py", b"")]
+
+
+def test_sources_reach_the_build_one_argument_at_a_time(tmp_path):
+    """`{sources}` has to become several arguments, not one string with spaces
+    in it, or a compiler is handed a file that does not exist."""
+    folder = tmp_path / "many"
+    folder.mkdir()
+    (folder / "main.c").write_text("one\n")
+    (folder / "extra.c").write_text("two\n")
+    (folder / "notes.txt").write_text("not a source\n")
+    spec = cl.ClientSpec(str(tmp_path), str(folder), {
+        "language": "C", "file": "main.c", "sources": ["**/*.c"], "output": "built",
+        "build": ["/bin/sh", "-c", 'cat "$@" > "$0"', "{out}", "{sources}"],
+        "run": ["{out}"]})
+    assert [os.path.basename(p) for p in spec.source_paths()] == ["main.c", "extra.c"]
+    spec.build()
+    assert (folder / "built").read_text() == "one\ntwo\n"
+
+    # a file that is not the entry point is still a reason to build again
+    time.sleep(0.01)
+    (folder / "extra.c").write_text("three\n")
+    os.utime(folder / "extra.c", (time.time() + 1, time.time() + 1))
+    spec.build()
+    assert (folder / "built").read_text() == "one\nthree\n"
+
+
+def test_a_manifest_that_changed_is_re_read(tmp_path):
+    """A team re-uploads with a go.mod, or an extra source: the registry has to
+    notice, or it would keep building the submission the old way."""
+    folder = tmp_path / "c"
+    folder.mkdir()
+    (folder / "main.py").write_text("")
+    manifest = {"language": "Python", "file": "main.py", "run": ["{python}", "{file}"]}
+    (folder / cl.MANIFEST).write_text(json.dumps(manifest))
+    reg = cl.ClientRegistry(str(tmp_path), [str(tmp_path)])
+    assert reg["client-c"].label.startswith("Python client")
+
+    manifest["label"] = "Team C (Python)"
+    (folder / cl.MANIFEST).write_text(json.dumps(manifest))
+    reg.scan()
+    assert reg["client-c"].label == "Team C (Python)"

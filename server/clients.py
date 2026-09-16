@@ -22,7 +22,12 @@ Manifest keys (only `language`, `file` and `run` are required):
     language     "q"                       shown in the lobby
     kind         "client-q"                bot key; default client-<folder>
     label        "q client"                shown in the Bot picker
-    file         "client.q"                the source a team edits
+    file         "client.q"                the source a team edits, the entry point
+    sources      "**/*.cpp" | [...]        every file a build compiles (globs,
+                                           relative to the folder); `{sources}`
+                                           in `build` becomes one argument per
+                                           match, and any of them being newer
+                                           than `output` triggers a rebuild
     edit         "choose_card[...]"        the function to replace
     note         "wins if it can, ..."     one line about the sample strategy
     tools        {"q": "q"}                executables needed; a list means
@@ -41,8 +46,13 @@ Manifest keys (only `language`, `file` and `run` are required):
     build_timeout / join_timeout           seconds; default 180 and 8
 
 Placeholders usable in `build`, `run`, `command`, `env` and `output`:
-`{file}` `{dir}` `{root}` `{out}` `{python}`, every name in `tools`, and for
-`run` also `{server}` `{game}` `{seat}` `{name}` `{avatar}`.
+`{file}` `{dir}` `{root}` `{out}` `{python}` `{sources}`, every name in
+`tools`, and for `run` also `{server}` `{game}` `{seat}` `{name}` `{avatar}`.
+
+A client is a *folder*, not a file: `file` names the entry point and everything
+beside it is the team's to use.  An interpreter finds its neighbours by itself
+(an `import`, a `require`, a `\\l`); a compiler is told about them with
+`sources`.
 
 How the seat reaches the client:
 
@@ -58,6 +68,8 @@ trust -- the same trust you give any file in the repository.
 
 from __future__ import annotations
 
+import glob
+import io
 import json
 import os
 import re
@@ -66,6 +78,7 @@ import subprocess
 import sys
 import threading
 import time
+import zipfile
 from typing import Optional
 
 MANIFEST = "client.json"
@@ -101,13 +114,27 @@ def _subst(value, mapping: dict):
     of them.  Inputs: the value and {name: replacement}.  Outputs: the same
     shape with `{name}` replaced.  Unknown placeholders are left alone, so a
     manifest with a typo fails loudly when the command runs instead of
-    silently losing an argument."""
+    silently losing an argument.
+
+    A replacement may itself be a list (`{sources}` is): an argument that is
+    exactly that placeholder becomes one argument per item, so a compiler is
+    handed four file names rather than one string with spaces in it."""
     if isinstance(value, str):
         for key, replacement in mapping.items():
+            if isinstance(replacement, (list, tuple)):
+                replacement = " ".join(str(item) for item in replacement)
             value = value.replace("{" + key + "}", str(replacement))
         return value
     if isinstance(value, list):
-        return [_subst(v, mapping) for v in value]
+        out = []
+        for item in value:
+            spliced = (isinstance(item, str) and item.startswith("{") and item.endswith("}")
+                       and isinstance(mapping.get(item[1:-1]), (list, tuple)))
+            if spliced:
+                out.extend(str(x) for x in mapping[item[1:-1]])
+            else:
+                out.append(_subst(item, mapping))
+        return out
     if isinstance(value, dict):
         return {k: _subst(v, mapping) for k, v in value.items()}
     return value
@@ -143,6 +170,7 @@ class ClientSpec:
         self.name = os.path.basename(folder.rstrip(os.sep))
         self.language = str(data.get("language") or "").strip()
         self.source = str(data.get("file") or "").strip()
+        self.manifest_key = json.dumps(data, sort_keys=True, default=str)
         run = data.get("run")
         if not self.language or not self.source or not run:
             raise ValueError("a manifest needs language, file and run")
@@ -166,6 +194,8 @@ class ClientSpec:
         self.rel_dir = os.path.relpath(folder, root).replace(os.sep, "/") + "/"
         self.output = str(data.get("output") or "")
         self.out_path = os.path.join(folder, self.output) if self.output else ""
+        patterns = data.get("sources") or []
+        self.sources = [patterns] if isinstance(patterns, str) else [str(p) for p in patterns]
         self._build = list(data.get("build") or [])
         self._run = list(run)
         self._env = {str(k): str(v) for k, v in (data.get("env") or {}).items()}
@@ -179,9 +209,24 @@ class ClientSpec:
 
     def _base_mapping(self) -> dict:
         mapping = {"file": self.path, "dir": self.dir, "root": self.root,
-                   "out": self.out_path or self.dir, "python": sys.executable}
+                   "out": self.out_path or self.dir, "python": sys.executable,
+                   "sources": self.source_paths()}
         mapping.update(self.tools)
         return mapping
+
+    def source_paths(self) -> list:
+        """Purpose: every file a build has to compile, for `{sources}`.
+        Outputs: absolute paths, sorted, the entry point first and never
+        repeated; just the entry point when the manifest names no globs (a
+        one-file client, which is still the common case)."""
+        found = []
+        for pattern in self.sources:
+            found += glob.glob(os.path.join(self.dir, pattern), recursive=True)
+        files = sorted({os.path.abspath(p) for p in found if os.path.isfile(p)})
+        entry = os.path.abspath(self.path)
+        if entry in files:
+            files.remove(entry)
+        return ([entry] + files) if (files or os.path.isfile(entry)) else []
 
     def refresh(self) -> None:
         """Purpose: look for the tools this client needs, so a language
@@ -201,6 +246,20 @@ class ClientSpec:
             else:
                 missing.append(" or ".join(candidates))
         self.tools, self.missing = found, missing
+
+    @property
+    def file_count(self) -> int:
+        """How many files the team wrote, for the lobby: the manifest and
+        anything the build produced are the server's, not theirs."""
+        built = os.path.abspath(self.out_path) if self.out_path else ""
+        total = 0
+        for folder, dirs, files in os.walk(self.dir):
+            dirs[:] = [d for d in dirs if d not in ("out", "target", "__pycache__", ".git")]
+            for name in files:
+                if name == MANIFEST or os.path.abspath(os.path.join(folder, name)) == built:
+                    continue
+                total += 1
+        return total
 
     @property
     def prebuilt(self) -> bool:
@@ -260,18 +319,23 @@ class ClientSpec:
         """The shape /api/strategies publishes for one client."""
         return {"kind": self.kind, "language": self.language, "file": self.rel_path,
                 "folder": self.rel_dir, "edit": self.edit, "note": self.note,
+                "files": self.file_count,
                 "run": self.command, "available": self.available, "reason": self.reason,
                 "badge": self.badge, "color": self.color, "tools": sorted(self.tools_wanted)}
 
     # ---------------------------------------------------------------- build & run
 
     def _stale(self) -> bool:
-        """True when the artifact must be rebuilt: no build step means never."""
+        """True when the artifact must be rebuilt: no build step means never.
+        Any source being newer than the artifact counts, so editing file four
+        of five rebuilds the client."""
         if not self._build or not self.out_path:
             return bool(self._build)
         if not os.path.exists(self.out_path):
             return True
-        return os.path.getmtime(self.out_path) < os.path.getmtime(self.path)
+        newest = max((os.path.getmtime(p) for p in self.source_paths()
+                      if os.path.exists(p)), default=0.0)
+        return os.path.getmtime(self.out_path) < newest
 
     def build(self) -> None:
         """Purpose: compile the client if its source is newer than its artifact.
@@ -384,7 +448,7 @@ class ClientRegistry:
                     errors.append(f"{os.path.relpath(manifest, self.root)}: {exc}")
                     continue
                 old = self._specs.get(spec.kind)
-                if old is not None and old.dir == spec.dir and old.source == spec.source:
+                if old is not None and old.dir == spec.dir and old.manifest_key == spec.manifest_key:
                     old.refresh()
                     specs[spec.kind] = old
                 else:
@@ -427,20 +491,47 @@ class ClientRegistry:
 
 # ============================================================ uploaded strategies
 #
-# A team on another device picks their strategy file in the browser and the
-# server writes it into the uploads folder with a generated manifest, so from
-# that moment it is an ordinary client: the registry finds it, builds it and
+# A team on another device picks their strategy in the browser and the server
+# writes it into the uploads folder with a generated manifest, so from that
+# moment it is an ordinary client: the registry finds it, builds it and
 # launches it for a seat like any other.
 #
-# The server then *runs* that file.  Accepting one is accepting whatever the
+# A strategy is a *folder*, not a file.  A team may send one file, a handful of
+# files, a folder, or a .zip of one; the server keeps the layout they sent,
+# picks the entry point and writes the manifest around it.  What it never takes
+# from them is the manifest itself: the commands the server runs are the ones
+# it generated from the entry point's extension, never ones the uploader wrote.
+#
+# The server then *runs* that code.  Accepting it is accepting whatever the
 # uploader wrote, which is why cardnim_server.py keeps this behind
-# --accept-uploads and why only these extensions are taken.
+# --accept-uploads and why the entry point has to be a language listed here.
 
-UPLOAD_MAX_BYTES = 1024 * 1024        # a strategy is a page of code, not a payload
+UPLOAD_MAX_BYTES = 1024 * 1024            # one file: a strategy is a page of code
+UPLOAD_MAX_TOTAL_BYTES = 8 * 1024 * 1024  # a whole submission, unpacked
+UPLOAD_MAX_FILES = 200                    # files in one submission
+UPLOAD_MAX_DEPTH = 8                      # folders deep inside the submission
 UPLOAD_SLUG_MAX = 40
 
+# Names that mean "start here", tried in this order when a submission has more
+# than one file the server could run.
+ENTRY_STEMS = ("main", "client", "strategy", "bot", "player", "run", "entry",
+               "start", "app", "index", "solution", "agent")
+
+# Editor and archive litter, dropped instead of being refused: a folder picked
+# in a browser or zipped by a Mac carries these whether the team meant it or not.
+JUNK_NAMES = {".ds_store", "thumbs.db", ".gitignore", ".gitattributes"}
+JUNK_DIRS = {"__macosx", "__pycache__", ".git", ".svn", ".hg", ".idea", ".vscode",
+             "node_modules", ".pytest_cache", ".mypy_cache", ".venv", "venv"}
+
+
+class UploadTooLarge(ValueError):
+    """A submission over one of the size limits, so the server can answer 413
+    rather than 400."""
+
+
 # extension -> the manifest to write.  These are the recipes the shipped
-# clients use, with {file} pointing at whatever was uploaded.
+# clients use, with {file} pointing at the entry point and {sources} at every
+# file a compiler has to be handed.
 UPLOAD_LANGUAGES: dict[str, dict] = {
     ".py": {"language": "Python", "badge": "Py", "color": "#3572a5",
             "tools": {"python": "python3"}, "run": ["{python}", "{file}"]},
@@ -453,29 +544,38 @@ UPLOAD_LANGUAGES: dict[str, dict] = {
             "run": ["{sh}", "{file}"]},
     ".q": {"language": "q", "badge": "q", "color": "#1f6f8b",
            "tools": {"q": "q"}, "run": ["{q}", "{file}", "-q"], "args": "env"},
+    ".jl": {"language": "Julia", "badge": "Jl", "color": "#9558b2",
+            "tools": {"julia": "julia"},
+            "run": ["{julia}", "--startup-file=no", "{file}"], "join_timeout": 25},
     ".cpp": {"language": "C++", "badge": "C++", "color": "#f34b7d",
              "tools": {"cxx": ["g++", "clang++"]},
-             "build": ["{cxx}", "-std=c++17", "-O2", "{file}", "-o", "{out}"],
+             "sources": ["**/*.cpp", "**/*.cc", "**/*.cxx"],
+             "build": ["{cxx}", "-std=c++17", "-O2", "{sources}", "-o", "{out}"],
              "output": "player", "run": ["{out}"]},
     ".cc": {"language": "C++", "badge": "C++", "color": "#f34b7d",
             "tools": {"cxx": ["g++", "clang++"]},
-            "build": ["{cxx}", "-std=c++17", "-O2", "{file}", "-o", "{out}"],
+            "sources": ["**/*.cpp", "**/*.cc", "**/*.cxx"],
+            "build": ["{cxx}", "-std=c++17", "-O2", "{sources}", "-o", "{out}"],
             "output": "player", "run": ["{out}"]},
     ".java": {"language": "Java", "badge": "Ja", "color": "#b07219",
               "tools": {"javac": "javac", "java": "java"},
               "verify": {"javac": ["-version"], "java": ["-version"]},
-              "build": ["{javac}", "-d", "{dir}/out", "{file}"]},
+              "sources": ["**/*.java"],
+              "build": ["{javac}", "-d", "{dir}/out", "{sources}"]},
     ".c": {"language": "C", "badge": "C", "color": "#555555",
            "tools": {"cc": ["cc", "gcc", "clang"]},
-           "build": ["{cc}", "-O2", "-o", "{out}", "{file}"],
+           "sources": ["**/*.c"],
+           "build": ["{cc}", "-O2", "-o", "{out}", "{sources}"],
            "output": "player", "run": ["{out}"]},
     ".go": {"language": "Go", "badge": "Go", "color": "#00add8",
             "tools": {"go": "go"},
-            "build": ["{go}", "build", "-o", "{out}", "{file}"],
+            "sources": ["*.go"],
+            "build": ["{go}", "build", "-o", "{out}", "{sources}"],
             "output": "player", "run": ["{out}"],
             "env": {"GOFLAGS": "-mod=mod"}},
     ".rs": {"language": "Rust", "badge": "Rs", "color": "#dea584",
             "tools": {"rustc": "rustc"},
+            "sources": ["**/*.rs"],
             "build": ["{rustc}", "-O", "--edition", "2021", "-o", "{out}", "{file}"],
             "output": "player", "run": ["{out}"]},
     ".R": {"language": "R", "badge": "R", "color": "#276dc3",
@@ -489,7 +589,8 @@ UPLOAD_LANGUAGES: dict[str, dict] = {
              "run": ["{lua}", "{file}"]},
     ".ts": {"language": "TypeScript", "badge": "TS", "color": "#3178c6",
             "tools": {"deno": "deno"},
-            "run": ["{deno}", "run", "--quiet", "--allow-net", "--allow-env", "{file}"]},
+            "run": ["{deno}", "run", "--quiet", "--allow-net", "--allow-env",
+                    "--allow-read", "{file}"]},
 }
 
 
@@ -508,41 +609,280 @@ def slugify(text: str, fallback: str = "strategy") -> str:
     return slug[:UPLOAD_SLUG_MAX] or fallback
 
 
-def save_upload(uploads_dir: str, filename: str, data: bytes, team: str = "") -> dict:
-    """Purpose: turn an uploaded strategy file into a client folder.
-    Inputs:  where uploads live, the name the browser reported, the bytes, and
-             the team name the folder should be named after.
-    Outputs: {kind, language, folder, file} describing the new client.
-    Side effects: creates <uploads>/<slug>/ holding the file and a generated
-             client.json.  Re-uploading for the same team replaces that
-             folder's source, so a team can fix a bug and send it again.
-    Raises ValueError for an unknown extension, an empty file or one over
-    UPLOAD_MAX_BYTES."""
+def language_for(name: str) -> Optional[str]:
+    """Purpose: the extension key a file name would be run as, or None.
+    `.R` is spelled with a capital, so the match is case-insensitive."""
+    ext = os.path.splitext(name)[1]
+    if ext in UPLOAD_LANGUAGES:
+        return ext
+    return next((k for k in UPLOAD_LANGUAGES if k.lower() == ext.lower()), None)
+
+
+def safe_member(name: str) -> str:
+    """Purpose: turn a path the uploader chose into one that can only land
+    inside the team's folder.
+    Inputs:  a member name from a browser, a zip or a query string.
+    Outputs: a relative path with forward slashes, or "" for anything that
+             should not be written at all (absolute paths, `..`, editor and
+             archive litter, a manifest the uploader wrote).
+    The server's own client.json is never taken from a submission: it is the
+    file that says which commands to run."""
+    raw = str(name or "").replace("\\", "/").strip()
+    if not raw or raw.startswith("/") or re.match(r"^[A-Za-z]:", raw):
+        return ""
+    parts = []
+    for part in raw.split("/"):
+        part = part.strip()
+        if not part or part == ".":
+            continue
+        if part == ".." or part.lower() in JUNK_DIRS:
+            return ""
+        parts.append(re.sub(r"[^A-Za-z0-9._+-]", "_", part))
+    if not parts or len(parts) > UPLOAD_MAX_DEPTH:
+        return ""
+    if parts[-1].lower() in JUNK_NAMES or parts[-1] == MANIFEST:
+        return ""
+    return "/".join(parts)
+
+
+def unpack_zip(data: bytes) -> list:
+    """Purpose: read a .zip submission into memory without trusting it.
+    Outputs: [(relative path, bytes)] for the ordinary files in it.
+    Raises ValueError if it is not a zip, UploadTooLarge if what it would
+    unpack to is over the limits.  Symlinks, devices, absolute paths and `..`
+    are dropped rather than written, so a zip cannot reach outside the folder
+    it is unpacked into."""
+    try:
+        archive = zipfile.ZipFile(io.BytesIO(data))
+    except (zipfile.BadZipFile, OSError) as exc:
+        raise ValueError(f"that .zip could not be read ({exc})") from None
+    members, total = [], 0
+    for info in archive.infolist():
+        if info.is_dir():
+            continue
+        mode = (info.external_attr >> 16) & 0o170000
+        if mode and mode != 0o100000:            # not a plain file: symlink, fifo, device
+            continue
+        name = safe_member(info.filename)
+        if not name:
+            continue
+        total += info.file_size
+        if total > UPLOAD_MAX_TOTAL_BYTES:       # checked before unpacking: no zip bomb
+            raise UploadTooLarge(f"unpacked, that is more than "
+                                 f"{UPLOAD_MAX_TOTAL_BYTES // 1024} KB")
+        members.append((name, info))
+    if len(members) > UPLOAD_MAX_FILES:
+        raise UploadTooLarge(f"that is {len(members)} files; the limit is {UPLOAD_MAX_FILES}")
+    files = []
+    for name, info in members:
+        try:
+            files.append((name, archive.read(info)))
+        except (zipfile.BadZipFile, RuntimeError, OSError) as exc:
+            raise ValueError(f"{name} could not be unpacked ({exc})") from None
+    if not files:
+        raise ValueError("that .zip holds no files")
+    return files
+
+
+def _strip_common_root(files: list) -> list:
+    """Purpose: a zip or a picked folder usually carries one wrapping folder
+    ("my-bot/main.py"); unwrap it so the entry point sits where the manifest
+    expects it.  Only a folder every file shares is removed, and only while
+    every path still has one, so a submission never unwraps to nothing."""
+    while files:
+        roots = {name.split("/", 1)[0] for name, _ in files}
+        if len(roots) != 1 or not all("/" in name for name, _ in files):
+            return files
+        files = [(name.split("/", 1)[1], data) for name, data in files]
+    return files
+
+
+# What a program that starts somewhere looks like, in the languages where the
+# file name alone does not say.  Used only to break a tie.
+MAIN_SIGNS = (
+    r"static\s+void\s+main\s*\(",              # Java
+    r"\bint\s+main\s*\(",                      # C, C++
+    r"__name__\s*==\s*['\"]__main__['\"]",      # Python
+    r"\bfunc\s+main\s*\(",                     # Go
+    r"\bfn\s+main\s*\(",                       # Rust
+)
+
+
+def pick_entry(names: list, hint: str = "", read=None) -> str:
+    """Purpose: decide which file of a submission is the program to run.
+    Inputs:  the relative paths in it, the entry the uploader asked for, and
+             read(name) -> bytes for looking inside one.
+    Outputs: one of the names.
+    Rules, in order: what the team asked for; the file nearest the top called
+    main/client/strategy/bot/...; the only one that has a main() in it; the
+    only runnable file there is.  Anything else is ambiguous and says so,
+    because guessing wrong here means running the wrong program in a
+    competition."""
+    runnable = [n for n in names if language_for(n)]
+    if not runnable:
+        accepted = ", ".join(sorted(UPLOAD_LANGUAGES))
+        raise ValueError("none of those files is a program this server can run; "
+                         f"one of them has to end in {accepted}")
+    wanted = safe_member(hint)
+    if wanted:
+        if wanted not in names:
+            raise ValueError(f"{wanted} is not one of the files you sent")
+        if not language_for(wanted):
+            raise ValueError(f"{wanted} is not a language this server can run")
+        return wanted
+    depth = lambda n: n.count("/")
+    named = [n for n in runnable
+             if os.path.splitext(os.path.basename(n))[0].lower() in ENTRY_STEMS]
+    if named:
+        best = min(depth(n) for n in named)
+        shallowest = [n for n in named if depth(n) == best]
+        if len(shallowest) == 1:
+            return shallowest[0]
+        by_stem = {os.path.splitext(os.path.basename(n))[0].lower(): n for n in shallowest}
+        for stem in ENTRY_STEMS:                 # main beats client beats strategy
+            if stem in by_stem and sum(1 for n in shallowest
+                                       if os.path.splitext(os.path.basename(n))[0].lower() == stem) == 1:
+                return by_stem[stem]
+        runnable = shallowest
+    if len(runnable) == 1:
+        return runnable[0]
+    if read is not None:                         # the file with the main() in it
+        starts = []
+        for name in runnable:
+            try:
+                text = read(name).decode("utf-8", "replace")
+            except (OSError, KeyError):
+                continue
+            if any(re.search(sign, text) for sign in MAIN_SIGNS):
+                starts.append(name)
+        if len(starts) == 1:
+            return starts[0]
+        if starts:
+            runnable = starts
+    listed = ", ".join(sorted(runnable)[:6])
+    ext = os.path.splitext(runnable[0])[1]
+    suggestion = "Main.java" if ext == ".java" else "main" + ext
+    raise ValueError(f"which file starts your bot? ({listed}) — call it {suggestion} "
+                     f"or say which one to run")
+
+
+def _manifest_for(entry: str, names: list, read) -> dict:
+    """Purpose: the manifest for a submission whose entry point is `entry`.
+    Inputs:  the entry path, every path in the submission and read(name) ->
+             bytes for looking inside a file.
+    Outputs: the manifest to write, already adjusted for the things a build
+             only knows by looking: the class a Java file declares, a Go
+             module, a Cargo project."""
+    ext = language_for(entry)
+    manifest = dict(UPLOAD_LANGUAGES[ext])
+    stem = os.path.splitext(os.path.basename(entry))[0]
+    folder = os.path.dirname(entry)
+
+    if ext == ".java":
+        # javac insists the public class matches the file name, and a file that
+        # declares a package is run by its full name from the output root.
+        source = read(entry).decode("utf-8", "replace")
+        found = re.search(r"^\s*package\s+([A-Za-z_][\w.]*)\s*;", source, re.M)
+        package = found.group(1) if found else ""
+        main = f"{package}.{stem}" if package else stem
+        manifest["output"] = "out/" + main.replace(".", "/") + ".class"
+        manifest["run"] = ["{java}", "-cp", "{dir}/out", main]
+    elif ext == ".go" and any(n == "go.mod" or n.endswith("/go.mod") for n in names):
+        # a module builds as a package, not as a list of files: that is the only
+        # way a team's own sub-packages are found
+        gomod = next(n for n in names if n == "go.mod" or n.endswith("/go.mod"))
+        module_dir = os.path.dirname(gomod)
+        package = os.path.relpath(folder or ".", module_dir or ".").replace(os.sep, "/")
+        target = "." if package in (".", "") or package.startswith("..") else "./" + package
+        prefix = ["{go}", "-C", "{dir}/" + module_dir] if module_dir else ["{go}"]
+        manifest["sources"] = ["**/*.go"]
+        manifest["build"] = prefix + ["build", "-o", "{out}", target]
+    elif ext == ".rs" and any(n == "Cargo.toml" or n.endswith("/Cargo.toml") for n in names):
+        cargo = next(n for n in names if n == "Cargo.toml" or n.endswith("/Cargo.toml"))
+        text = read(cargo).decode("utf-8", "replace")
+        found = re.search(r"^\s*name\s*=\s*[\"']([^\"']+)[\"']", text, re.M)
+        name = found.group(1) if found else "player"
+        manifest["tools"] = {"cargo": "cargo"}
+        manifest["sources"] = ["**/*.rs", "**/Cargo.toml"]
+        manifest["build"] = ["{cargo}", "build", "--release", "--quiet",
+                             "--manifest-path", "{dir}/" + cargo]
+        manifest["output"] = os.path.join(os.path.dirname(cargo), "target", "release",
+                                          name).replace("\\", "/")
+        manifest["run"] = ["{out}"]
+        manifest["build_timeout"] = 600
+    return manifest
+
+
+def save_upload(uploads_dir: str, filename: str, data: bytes, team: str = "",
+                entry: str = "") -> dict:
+    """Purpose: turn one uploaded file into a client folder.  A .zip is
+    unpacked; anything else is the strategy itself.
+    Inputs:  where uploads live, the name the browser reported, the bytes, the
+             team name the folder should be named after, and the entry point
+             the team asked for (a .zip may hold more than one candidate).
+    Outputs: what save_bundle returns.
+    Raises ValueError for a file this server cannot run, an empty file or a
+    broken archive, UploadTooLarge for one over the limits."""
     base = os.path.basename(str(filename or "").replace("\\", "/")).strip()
-    stem, ext = os.path.splitext(base)
-    if ext not in UPLOAD_LANGUAGES:           # .R is spelled with a capital
-        ext = next((k for k in UPLOAD_LANGUAGES if k.lower() == ext.lower()), ext.lower())
-    if ext not in UPLOAD_LANGUAGES:
-        raise ValueError("cannot run a " + (ext or "file with no extension") + "; accepted: "
-                         + ", ".join(sorted(UPLOAD_LANGUAGES)))
     if not data:
         raise ValueError("the file is empty")
+    if base.lower().endswith(".zip"):
+        return save_bundle(uploads_dir, unpack_zip(data), team, entry)
     if len(data) > UPLOAD_MAX_BYTES:
-        raise ValueError(f"the file is larger than {UPLOAD_MAX_BYTES // 1024} KB")
+        raise UploadTooLarge(f"the file is larger than {UPLOAD_MAX_BYTES // 1024} KB")
+    if not language_for(base):
+        ext = os.path.splitext(base)[1]
+        raise ValueError("cannot run a " + (ext or "file with no extension") + "; accepted: "
+                         + ", ".join(sorted(UPLOAD_LANGUAGES)) + ", .zip")
+    return save_bundle(uploads_dir, [(base, data)], team, entry)
 
-    template = dict(UPLOAD_LANGUAGES[ext])
-    if ext == ".java":
-        # javac insists the public class matches the file name, so the class to
-        # run is the uploaded file's own stem.
-        main = re.sub(r"[^A-Za-z0-9_]", "", stem) or "Client"
-        base = main + ".java"
-        template["output"] = f"out/{main}.class"
-        template["run"] = ["{java}", "-cp", "{dir}/out", main]
-    else:
-        safe_stem = re.sub(r"[^A-Za-z0-9._-]", "_", stem) or "strategy"
-        base = safe_stem + ext
 
-    slug = slugify(team or stem)
+def save_bundle(uploads_dir: str, files: list, team: str = "", entry: str = "") -> dict:
+    """Purpose: turn a whole submission -- one file or fifty, in as many
+    folders as the team used -- into a client the server can build and launch.
+    Inputs:  where uploads live, [(relative path, bytes)] as sent, the team
+             name the folder is named after, and the entry point the team
+             asked for ("" to work it out).
+    Outputs: {kind, language, folder, file, files, names} describing the new
+             client; `file` is the entry point, `names` what was written.
+    Side effects: creates <uploads>/<slug>/ holding the submission and a
+             generated client.json.  Re-uploading for the same team replaces
+             that folder, so a team can fix a bug and send it again.
+    Raises ValueError for a submission this server cannot run and
+    UploadTooLarge for one over the limits."""
+    cleaned, seen = [], set()
+    for name, data in files:
+        safe = safe_member(name)
+        if not safe or safe in seen:
+            continue
+        seen.add(safe)
+        cleaned.append((safe, data))
+    cleaned = _strip_common_root(cleaned)
+    if not cleaned:
+        raise ValueError("nothing in that submission could be saved")
+    if len(cleaned) > UPLOAD_MAX_FILES:
+        raise UploadTooLarge(f"that is {len(cleaned)} files; the limit is {UPLOAD_MAX_FILES}")
+    total = sum(len(data) for _, data in cleaned)
+    if total > UPLOAD_MAX_TOTAL_BYTES:
+        raise UploadTooLarge(f"that is {total // 1024} KB; the limit is "
+                             f"{UPLOAD_MAX_TOTAL_BYTES // 1024} KB")
+    if not total:
+        raise ValueError("every one of those files is empty")
+    for name, data in cleaned:
+        if len(data) > UPLOAD_MAX_BYTES:
+            raise UploadTooLarge(f"{name} is larger than {UPLOAD_MAX_BYTES // 1024} KB")
+
+    names = [name for name, _ in cleaned]
+    contents = dict(cleaned)
+    hint = safe_member(entry)
+    while hint and hint not in names and "/" in hint:
+        hint = hint.split("/", 1)[1]             # the wrapping folder was stripped above
+    entry_path = pick_entry(names, hint, lambda n: contents[n])
+    if not contents[entry_path].strip():
+        raise ValueError(f"{entry_path} is empty")
+    manifest = _manifest_for(entry_path, names, lambda n: contents[n])
+
+    slug = slugify(team or os.path.splitext(os.path.basename(entry_path))[0])
     folder = os.path.join(uploads_dir, slug)
     os.makedirs(folder, exist_ok=True)
     for stale in os.listdir(folder):          # one strategy per team, not a pile
@@ -552,13 +892,22 @@ def save_upload(uploads_dir: str, filename: str, data: bytes, team: str = "") ->
         except OSError:
             pass
 
-    with open(os.path.join(folder, base), "wb") as fh:
-        fh.write(data)
-    manifest = dict(template)
-    manifest.update({"kind": f"upload-{slug}", "file": base,
-                     "label": f"{team.strip() or slug} ({template['language']})",
-                     "note": "uploaded strategy", "uploaded": True})
+    root = os.path.realpath(folder)
+    for name, data in cleaned:
+        path = os.path.join(folder, *name.split("/"))
+        if not os.path.realpath(os.path.dirname(path)).startswith(root):
+            continue                          # belt and braces: safe_member already refused these
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "wb") as fh:
+            fh.write(data)
+
+    manifest.update({"kind": f"upload-{slug}", "file": entry_path,
+                     "label": f"{team.strip() or slug} ({manifest['language']})",
+                     "note": f"uploaded strategy, {len(cleaned)} file"
+                             f"{'s' if len(cleaned) != 1 else ''}",
+                     "uploaded": True})
     with open(os.path.join(folder, MANIFEST), "w", encoding="utf-8") as fh:
         json.dump(manifest, fh, indent=2)
-    return {"kind": manifest["kind"], "language": template["language"],
-            "folder": folder, "file": base}
+    return {"kind": manifest["kind"], "language": manifest["language"],
+            "folder": folder, "file": entry_path, "files": len(cleaned),
+            "names": sorted(names)}

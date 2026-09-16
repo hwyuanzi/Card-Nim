@@ -151,14 +151,16 @@ lives in. The lobby shows this list so teams know where to start.
               "folder": "clients/ruby/", "edit": "choose_card(stones, my_cards, opp_cards)",
               "note": "wins if it can, ...", "run": "ruby clients/ruby/client.rb --game ID --name NAME",
               "available": true, "reason": "", "badge": "Rb", "color": "#cc342d",
-              "tools": ["ruby"],
+              "tools": ["ruby"], "files": 1,
               "strategies": [{"name": "Sample strategy", "file": "...", "note": "..."}]}],
  "bots": [{"kind": "greedy", "label": "Greedy bot", "file": "server/bots.py", "private": false}],
  "problems": []}
 ```
 
-`available` is false with a `reason` ("needs rustc") when the machine has not
-got the toolchain: a team should see their language greyed out, not missing.
+`file` is the entry point and `files` how many files the client is made of (an
+uploaded submission is often several). `available` is false with a `reason`
+("needs rustc") when the machine has not got the toolchain: a team should see
+their language greyed out, not missing.
 `problems` lists manifests that could not be read, so a typo in someone's
 `client.json` is visible instead of silent.
 
@@ -409,10 +411,14 @@ sample clients look at the status code first.
 
 ## Uploaded strategies
 
-A team on another device can send their strategy file to the server, which
-writes it into the uploads folder with a generated manifest and from then on
-treats it as an ordinary client: it appears in `/api/bots`, can be seated in a
-game and can be entered in a tournament.
+A team on another device can send their strategy to the server, which writes it
+into the uploads folder with a generated manifest and from then on treats it as
+an ordinary client: it appears in `/api/bots`, can be seated in a game and can
+be entered in a tournament.
+
+A submission is a **folder, not a file**: one file, several files, a folder
+with sub-folders, or a `.zip` of one. What the server has to know is which file
+starts the bot; everything beside it is the team's own business.
 
 **The server executes what is uploaded.** Both endpoints are refused unless it
 was started with `--accept-uploads`.
@@ -422,35 +428,69 @@ was started with `--accept-uploads`.
 What this server accepts, so a page knows whether to offer the option at all.
 
 ```json
-{"enabled": true, "accept": ".cc,.cpp,.java,.js,.py,.q,.rb,.sh",
+{"enabled": true, "accept": ".cc,.cpp,.java,.jl,.js,.py,.q,.rb,.sh,.zip",
  "languages": [{"extension": ".py", "language": "Python"}, ...],
- "max_bytes": 1048576}
+ "max_bytes": 1048576, "max_total_bytes": 8388608, "max_files": 200,
+ "multifile": true, "entry_names": ["main", "client", "strategy", ...]}
 ```
 
 `enabled` is false on a server started without `--accept-uploads`; everything
 else is still reported so the page can explain what would be accepted.
+`max_bytes` is the limit for one file, `max_total_bytes` for a whole
+submission, and `entry_names` are the stems that mark the entry point.
 
-### `POST /api/uploads?filename=strategy.py&team=Team+A`
+### `POST /api/uploads?team=Team+A`
 
-The **raw file bytes** are the body — no multipart, so any client can send one
-(`fetch(url, {method: "POST", body: file})`, or `curl --data-binary @file`).
+Three shapes, all of them a POST to the same endpoint:
+
+| Body | Query | What it is |
+|---|---|---|
+| raw file bytes | `?filename=strategy.py` | one file, as before |
+| raw zip bytes | `?filename=bot.zip` | an archive, unpacked here |
+| `multipart/form-data` | — | several files, each part's `filename` being its path inside the submission |
+
+So a browser sends one file with `fetch(url, {method: "POST", body: file})`
+and a folder with a `FormData` whose parts are named by `webkitRelativePath`;
+a terminal sends `curl --data-binary @bot.zip ".../api/uploads?filename=bot.zip&team=Team+A"`.
+
+`?entry=main.py` (or an `entry` field in the form) says which file starts the
+bot.
 
 ```json
-{"kind": "upload-team-a", "language": "Python", "file": "strategy.py",
+{"kind": "upload-team-a", "language": "Python", "file": "main.py", "files": 3,
+ "names": ["main.py", "protocol.py", "strategy.py"],
  "available": true, "reason": ""}
 ```
 
-Enter the tournament with that `kind`. `available` is false with a `reason`
+Enter the tournament with that `kind`; `file` is the entry point the server
+chose and `names` everything it kept. `available` is false with a `reason`
 when the machine has not got the toolchain (an uploaded `.q` with no kdb+
-installed, say) — the file is still saved, it just cannot be run here.
+installed, say) — the submission is still saved, it just cannot be run here.
 
+* **The entry point** is, in order: the file `entry` names; the one nearest the
+  top called `main`/`client`/`strategy`/`bot`/… ; the only one with a `main()`
+  in it; the only runnable file there is. Otherwise `400` naming the
+  candidates, because running the wrong file in a competition is worse than
+  asking.
+* **Compiled languages** get every file: `**/*.cpp` and `**/*.java` and
+  `**/*.c` are compiled together, a `go.mod` makes it `go build .` of the
+  package, a `Cargo.toml` makes it `cargo build --release`. A Java file that
+  declares a package is run by its full class name.
+* **The manifest is never taken from a submission.** A `client.json` inside one
+  is dropped; the server writes its own from the entry point's extension, so
+  the commands it runs are always the ones it generated.
 * The folder is named after the team, so uploading again replaces that team's
-  previous strategy rather than piling up.
-* One file per team. It must be self-contained: nothing else is uploaded with it.
-* Accepted extensions only; `400` for anything else, an empty file, or a name
-  with no extension. `413` over `max_bytes`. `403` when uploads are off.
-* Path separators in the file name and the team name are stripped, so an
-  upload always lands inside the uploads folder.
+  previous submission rather than piling up.
+* Accepted extensions only; `400` for a submission with nothing runnable in it,
+  an empty one, or a broken archive. `413` over `max_bytes` (one file),
+  `max_total_bytes` (the submission, measured by what a zip *unpacks to*) or
+  `max_files`. `403` when uploads are off.
+* Absolute paths, `..` and symlinks in a zip are dropped, so a submission
+  always lands inside its own folder. So is the litter a zipped folder carries
+  whether the team meant it or not: `__MACOSX/`, `.DS_Store`, `__pycache__/`,
+  `.git/`, `.venv/`, `node_modules/` — a submission is source, not an
+  installed tree, and the limits above would not fit one anyway. One wrapping
+  folder (`my-bot/main.py`) is unwrapped; the folders inside it are kept.
 
 ## Clients in other languages
 

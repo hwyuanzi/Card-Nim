@@ -1,0 +1,13 @@
+{
+  "language": "Julia",
+  "label": "Julia client (sample strategy)",
+  "file": "client.jl",
+  "edit": "choose_card(stones, my_cards, opp_cards)",
+  "note": "wins if it can, avoids giving an exact match, else the smallest fitting card",
+  "badge": "Jl",
+  "color": "#9558b2",
+  "tools": {"julia": "julia"},
+  "run": ["{julia}", "--startup-file=no", "{file}"],
+  "command": "julia {file} --game ID --name NAME",
+  "join_timeout": 25
+}

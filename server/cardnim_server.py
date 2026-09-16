@@ -21,6 +21,7 @@ browser pages live in web/.
 from __future__ import annotations
 
 import argparse
+import email
 import json
 import mimetypes
 import os
@@ -41,7 +42,9 @@ from engine import (  # noqa: E402
     Game, GameError, IllegalMove, new_game_id,
 )
 from bots import BotRunner, registry as bot_registry  # noqa: E402
-from clients import ClientRegistry, save_upload, upload_languages  # noqa: E402
+from clients import (  # noqa: E402
+    ClientRegistry, UploadTooLarge, save_bundle, save_upload, upload_languages,
+)
 import clients as clients_mod  # noqa: E402
 from tournament import KIND_API, KIND_HUMAN, Tournament  # noqa: E402
 import tournament as tmod  # noqa: E402
@@ -477,6 +480,39 @@ class ApiError(Exception):
         self.message = message
 
 
+def _parse_multipart(body: bytes, content_type: str) -> tuple:
+    """Purpose: pull the files out of a multipart/form-data upload, which is
+    how a browser sends a strategy made of several files.
+    Inputs:  the raw body and the request's Content-Type (it carries the
+             boundary).
+    Outputs: ([(path, bytes)], entry) -- every part that came with a file name,
+             keeping the path the browser reported (a folder picked in the page
+             reports "my-bot/main.py"), and the value of an `entry` field if
+             the page said which file starts the bot.
+    The stdlib email parser does the boundary work; nothing here decodes or
+    interprets the bytes.  A part without a file name is an ordinary form
+    field."""
+    header = f"Content-Type: {content_type}\r\nMIME-Version: 1.0\r\n\r\n".encode()
+    try:
+        message = email.message_from_bytes(header + body)
+        parts = message.get_payload() if message.is_multipart() else []
+    except (ValueError, TypeError) as exc:
+        raise ApiError(400, f"that form could not be read ({exc})") from None
+    if not parts:
+        raise ApiError(400, "that form could not be read (no parts in it)")
+    files, entry = [], ""
+    for part in parts:
+        if not hasattr(part, "get_filename"):
+            continue
+        name = part.get_filename()
+        payload = part.get_payload(decode=True) or b""
+        if name:
+            files.append((name, payload))
+        elif part.get_param("name", header="content-disposition") == "entry":
+            entry = payload.decode("utf-8", "replace").strip()
+    return files, entry
+
+
 ROUTES = [
     # (method, regex, handler-name).  {id} captures a game id.
     ("GET",  r"^/api/games$",                         "list_games"),
@@ -759,21 +795,37 @@ class Handler(BaseHTTPRequestHandler):
     def api_upload_info(self) -> None:
         """GET /api/uploads -> what this server accepts.
         The browser asks before showing its file picker, so a server started
-        without --accept-uploads simply never offers the tab."""
+        without --accept-uploads simply never offers the tab.  The limits are
+        published rather than hard-coded in the page, so an oversized
+        submission is caught on the device instead of on the wire."""
         store = self.server.store
         langs = upload_languages()
         self._send_json({"enabled": bool(store.uploads_dir),
                          "languages": langs,
-                         "accept": ",".join(l["extension"] for l in langs),
-                         "max_bytes": clients_mod.UPLOAD_MAX_BYTES})
+                         "accept": ",".join(l["extension"] for l in langs) + ",.zip",
+                         "max_bytes": clients_mod.UPLOAD_MAX_BYTES,
+                         "max_total_bytes": clients_mod.UPLOAD_MAX_TOTAL_BYTES,
+                         "max_files": clients_mod.UPLOAD_MAX_FILES,
+                         "multifile": True,
+                         "entry_names": list(clients_mod.ENTRY_STEMS)})
 
     def api_upload(self) -> None:
-        """POST /api/uploads?filename=strategy.py&team=Team+A  (raw file bytes)
-        -> {"kind": "upload-team-a", "language": "Python", "available": true}
+        """POST /api/uploads?team=Team+A -> the strategy, in one of three shapes:
 
-        Writes the file into the uploads folder with a generated manifest, so
-        it becomes a client the server can build, launch and seat like any
-        other.  The caller then enters a tournament with the returned `kind`.
+            ?filename=strategy.py      raw body: the file itself
+            ?filename=bot.zip          raw body: an archive, unpacked here
+            multipart/form-data        several files, each part named by its
+                                       path inside the submission
+
+        -> {"kind": "upload-team-a", "language": "Python", "files": 3,
+            "file": "main.py", "names": [...], "available": true}
+
+        `?entry=main.py` (or an `entry` field in the form) says which file
+        starts the bot; without it the server works it out and says which one
+        it chose.  The submission is written into the uploads folder with a
+        *generated* manifest, so it becomes a client the server can build,
+        launch and seat like any other.  The caller then enters a tournament
+        with the returned `kind`.
 
         The server executes what is uploaded, so this is refused unless it was
         started with --accept-uploads."""
@@ -781,20 +833,35 @@ class Handler(BaseHTTPRequestHandler):
         if not store.uploads_dir:
             raise ApiError(403, "this server does not accept uploaded strategies "
                                 "(start it with --accept-uploads)")
+        content_type = self.headers.get("Content-Type", "") or ""
+        multipart = content_type.lower().startswith("multipart/form-data")
+        filename = str(self.param("filename", "") or "")
+        bundle = multipart or filename.lower().endswith(".zip")
+        limit = (clients_mod.UPLOAD_MAX_TOTAL_BYTES if bundle
+                 else clients_mod.UPLOAD_MAX_BYTES)
         try:
             length = int(self.headers.get("Content-Length") or 0)
         except ValueError:
             raise ApiError(400, "bad Content-Length header") from None
         if length <= 0:
             raise ApiError(400, "no file was sent")
-        if length > clients_mod.UPLOAD_MAX_BYTES:
+        if length > limit:
             self._drain(length)
-            raise ApiError(413, f"the file is larger than {clients_mod.UPLOAD_MAX_BYTES // 1024} KB")
+            raise ApiError(413, f"that is {length // 1024} KB; the limit is {limit // 1024} KB")
         data = self.rfile.read(length)
-        filename = str(self.param("filename", "") or "")
         team = str(self.param("team", "") or "")
+        entry = str(self.param("entry", "") or "")
+
         try:
-            saved = save_upload(store.uploads_dir, filename, data, team)
+            if multipart:
+                files, form_entry = _parse_multipart(data, content_type)
+                if not files:
+                    raise ApiError(400, "the form held no files")
+                saved = save_bundle(store.uploads_dir, files, team, entry or form_entry)
+            else:
+                saved = save_upload(store.uploads_dir, filename, data, team, entry)
+        except UploadTooLarge as exc:
+            raise ApiError(413, str(exc)) from None
         except ValueError as exc:
             raise ApiError(400, str(exc)) from None
         except OSError as exc:
@@ -802,10 +869,13 @@ class Handler(BaseHTTPRequestHandler):
 
         store.externals.scan()          # make it seatable now, not in ten seconds
         spec = store.externals.get(saved["kind"])
-        self.log_message("upload: %s (%s) from %s as %s",
-                         saved["file"], saved["language"], self.client_address[0], saved["kind"])
+        self.log_message("upload: %s (%s, %d file%s) from %s as %s",
+                         saved["file"], saved["language"], saved["files"],
+                         "" if saved["files"] == 1 else "s",
+                         self.client_address[0], saved["kind"])
         self._send_json({"kind": saved["kind"], "language": saved["language"],
-                         "file": saved["file"],
+                         "file": saved["file"], "files": saved["files"],
+                         "names": saved["names"],
                          "available": bool(spec and spec.available),
                          "reason": spec.reason if spec else "the manifest could not be read"}, 201)
 
@@ -1305,8 +1375,9 @@ def main(argv=None) -> int:
                         help="extra folder of client manifests to offer as bots; repeatable "
                              "(clients/ is always scanned)")
     parser.add_argument("--accept-uploads", action="store_true",
-                        help="let people send a strategy file from their own device (the "
-                             "tournament page offers it) and RUN it on this machine")
+                        help="let people send a strategy from their own device -- one file, "
+                             "several, a folder or a .zip (the tournament page offers it) -- "
+                             "and RUN it on this machine")
     parser.add_argument("--uploads-dir", default=os.path.join(REPO_ROOT, "uploads"), metavar="DIR",
                         help="where uploaded strategies are written (default: uploads/)")
     args = parser.parse_args(argv)

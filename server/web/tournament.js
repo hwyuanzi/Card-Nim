@@ -28,6 +28,7 @@
 
   let t = null;                // the bracket, as last received
   let uploadInfo = { enabled: false, accept: "", languages: [] };  // /api/uploads
+  let picked = [];             // the submission: [{file, path}], one entry per file
   /* The join QR belongs on the organiser's screen, not on the phone of
      someone who just scanned it. The server says whether this request came
      from the machine it runs on; ?host=1 forces it on for projecting from
@@ -182,25 +183,41 @@
     joinAvatar = Number(b.dataset.av);
     markFace();
   });
-  $("join-file").addEventListener("change", () => { resetSteps(false); $("join-error").textContent = ""; });
+  /* What a team picked, whether that is one file, five, or a folder.  A folder
+     arrives with the paths inside it (webkitRelativePath), which is how a bot
+     split across folders keeps its shape on the way here. */
+  function takePick(input, other) {
+    picked = Array.from(input.files || []).map((f) => ({ file: f, path: f.webkitRelativePath || f.name }))
+      .filter((p) => !isJunk(p.path));
+    if (other) other.value = "";
+    resetSteps(false);
+    $("join-error").textContent = "";
+    renderPicked();
+  }
+  $("join-file").addEventListener("change", () => takePick($("join-file"), $("join-folder")));
+  $("join-folder").addEventListener("change", () => takePick($("join-folder"), $("join-file")));
+  $("join-folder-btn").addEventListener("click", () => $("join-folder").click());
+
   joinForm.addEventListener("submit", (ev) => {
     ev.preventDefault();
     if (busy) return;
     const err = $("join-error");
     err.textContent = "";
     const name = joinForm.elements.name.value.trim();
-    const file = $("join-file").files[0];
     if (!name) { err.textContent = "Type a name first."; joinForm.elements.name.focus(); return; }
-    if (!file) { err.textContent = "Choose your strategy file first."; $("join-file").focus(); return; }
+    if (!picked.length) { err.textContent = "Choose your strategy first."; $("join-file").focus(); return; }
 
     busy = true;
     const submit = joinForm.querySelector('button[type="submit"]');
     submit.disabled = true;
     joinForm.classList.add("working");
-    uploadFlow(file, name)
+    uploadFlow(picked, name)
       .then(() => {
         joinForm.elements.name.value = "";
         $("join-file").value = "";
+        $("join-folder").value = "";
+        picked = [];
+        renderPicked();
         joinAvatar = 1 + Math.floor(Math.random() * NUM_AVATARS);
         markFace();
         setTimeout(() => { resetSteps(false); }, 4000);   // leave the ticks up a moment
@@ -244,15 +261,93 @@
     catch (e) { box.textContent = ""; box.dataset.url = ""; }
   }
 
-  /* Send one strategy file to the server, which writes it into the uploads
-     folder with a generated manifest and can then build and run it.  Returns
-     {kind, language, file, available, reason}. */
-  async function postStrategy(file, team) {
-    const q = `?filename=${encodeURIComponent(file.name)}&team=${encodeURIComponent(team)}`;
-    const res = await fetch("/api/uploads" + q, { method: "POST", body: file });
+  /* Send the strategy to the server, which writes it into the uploads folder
+     with a generated manifest and can then build and run it.  One file goes as
+     the raw body (a .zip included, which the server unpacks); several go as a
+     form, each part named by its path inside the submission, so a folder keeps
+     its shape.  Returns {kind, language, file, files, names, available, reason}. */
+  async function postStrategy(files, team, entry) {
+    let url = `/api/uploads?team=${encodeURIComponent(team)}`;
+    let body;
+    if (files.length === 1) {
+      url += `&filename=${encodeURIComponent(files[0].path)}`;
+      body = files[0].file;
+    } else {
+      body = new FormData();
+      files.forEach((p) => body.append("files", p.file, p.path));
+      if (entry) body.append("entry", entry);
+    }
+    if (entry && files.length === 1) url += `&entry=${encodeURIComponent(entry)}`;
+    const res = await fetch(url, { method: "POST", body });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || `the server refused it (${res.status})`);
     return data;
+  }
+
+  /* ------------------------------------------------- reading the submission
+
+     The same rules the server uses, run here first so a team is told what will
+     happen before anything is sent.  The server decides in the end: it can
+     look inside the files, which this cannot. */
+
+  const JUNK_DIRS = ["__macosx", "__pycache__", ".git", ".svn", ".hg", ".idea", ".vscode",
+    "node_modules", ".pytest_cache", ".mypy_cache", ".venv", "venv"];
+  const JUNK_FILES = [".ds_store", "thumbs.db"];
+
+  function isJunk(path) {
+    const parts = String(path).split("/");
+    if (JUNK_FILES.includes(parts[parts.length - 1].toLowerCase())) return true;
+    return parts.slice(0, -1).some((d) => JUNK_DIRS.includes(d.toLowerCase()));
+  }
+
+  const baseName = (path) => String(path).split("/").pop();
+  const extOf = (path) => (baseName(path).match(/\.[^.]+$/) || [""])[0];
+
+  function langFor(path) {
+    const ext = extOf(path);
+    const langs = uploadInfo.languages || [];
+    return langs.find((l) => l.extension === ext)
+      || langs.find((l) => l.extension.toLowerCase() === ext.toLowerCase());
+  }
+
+  /* Purpose: which file starts the bot.  Outputs: the path, or "" when several
+     could and only the server can tell (it reads them; it looks for a main). */
+  function pickEntry(paths) {
+    const runnable = paths.filter(langFor);
+    if (!runnable.length) return "";
+    if (runnable.length === 1) return runnable[0];
+    const stems = uploadInfo.entry_names || ["main", "client", "strategy", "bot"];
+    const depth = (p) => p.split("/").length;
+    const stem = (p) => baseName(p).replace(/\.[^.]+$/, "").toLowerCase();
+    const named = runnable.filter((p) => stems.includes(stem(p)));
+    if (!named.length) return "";
+    const top = Math.min.apply(null, named.map(depth));
+    const shallow = named.filter((p) => depth(p) === top);
+    if (shallow.length === 1) return shallow[0];
+    for (const want of stems) {
+      const hits = shallow.filter((p) => stem(p) === want);
+      if (hits.length === 1) return hits[0];
+    }
+    return "";
+  }
+
+  /* A zip is opaque until the server unpacks it, so it is its own case. */
+  const isArchive = (files) => files.length === 1 && /\.zip$/i.test(files[0].path);
+
+  function renderPicked() {
+    const box = $("join-picked");
+    if (!box) return;
+    if (!picked.length) { box.textContent = ""; return; }
+    const total = picked.reduce((n, p) => n + p.file.size, 0);
+    if (isArchive(picked)) {
+      box.innerHTML = `<b>${esc(baseName(picked[0].path))}</b> — ${kb(total)}, unpacked here`;
+      return;
+    }
+    const entry = pickEntry(picked.map((p) => p.path));
+    const count = `${picked.length} file${picked.length === 1 ? "" : "s"}, ${kb(total)}`;
+    box.innerHTML = entry
+      ? `${count} — starts at <b>${esc(entry)}</b>`
+      : `${count} — <b>which file starts it?</b> call one main${esc(extOf(picked[0].path) || ".py")}`;
   }
 
   /* ------------------------------------------------- the upload's own steps
@@ -263,8 +358,8 @@
      leaves the device. */
 
   const UPLOAD_STEPS = [
-    ["type", "File type"],
-    ["size", "File size"],
+    ["type", "A language this server runs"],
+    ["size", "Size"],
     ["send", "Sent to the server"],
     ["run", "This machine can run it"],
     ["enter", "Entered the bracket"],
@@ -296,32 +391,54 @@
   /* Purpose: run the checks in order, stopping at the first failure with that
      step marked.  Outputs: the upload's {kind, ...}; throws with a message for
      the error line. */
-  async function uploadFlow(file, team) {
+  async function uploadFlow(files, team) {
     resetSteps(true);
+    const archive = isArchive(files);
+    const total = files.reduce((n, p) => n + p.file.size, 0);
 
     setStep("type", "busy");
-    const ext = (file.name.match(/\.[^.]+$/) || [""])[0].toLowerCase();
-    const lang = (uploadInfo.languages || []).find((l) => l.extension === ext);
-    if (!lang) {
-      const accepted = (uploadInfo.languages || []).map((l) => l.extension).join(" ");
-      setStep("type", "fail", `${ext || "no extension"} — accepted: ${accepted}`);
-      throw new Error("That kind of file cannot be run here.");
+    let entry = "";
+    if (archive) {
+      setStep("type", "ok", "a .zip — the server unpacks it and looks inside");
+    } else {
+      entry = pickEntry(files.map((p) => p.path));
+      const runnable = files.filter((p) => langFor(p.path));
+      if (!runnable.length) {
+        const accepted = (uploadInfo.languages || []).map((l) => l.extension).join(" ");
+        setStep("type", "fail", `nothing here ends in ${accepted} or .zip`);
+        throw new Error("None of those files is a program this server can run.");
+      }
+      setStep("type", "ok", entry
+        ? `${entry} — ${langFor(entry).language}`
+        : `${runnable.length} could start it; the server will choose`);
     }
-    setStep("type", "ok", `${ext} — ${lang.language}`);
 
     setStep("size", "busy");
-    if (!file.size) { setStep("size", "fail", "the file is empty"); throw new Error("That file is empty."); }
-    if (uploadInfo.max_bytes && file.size > uploadInfo.max_bytes) {
-      setStep("size", "fail", `${kb(file.size)}, over the ${kb(uploadInfo.max_bytes)} limit`);
-      throw new Error("That file is too big.");
+    if (!total) { setStep("size", "fail", "there is nothing in it"); throw new Error("That submission is empty."); }
+    const maxFiles = uploadInfo.max_files || 0;
+    if (maxFiles && files.length > maxFiles) {
+      setStep("size", "fail", `${files.length} files, over the limit of ${maxFiles}`);
+      throw new Error("That is too many files.");
     }
-    setStep("size", "ok", `${kb(file.size)} of ${kb(uploadInfo.max_bytes || 0)}`);
+    // a .zip is one file but a whole submission, so only the total applies to it
+    const big = archive ? null
+      : files.find((p) => uploadInfo.max_bytes && p.file.size > uploadInfo.max_bytes);
+    if (big) {
+      setStep("size", "fail", `${baseName(big.path)} is ${kb(big.file.size)}, over the ${kb(uploadInfo.max_bytes)} limit for one file`);
+      throw new Error("One of those files is too big.");
+    }
+    const cap = uploadInfo.max_total_bytes || uploadInfo.max_bytes || 0;
+    if (cap && total > cap) {
+      setStep("size", "fail", `${kb(total)}, over the ${kb(cap)} limit`);
+      throw new Error("That submission is too big.");
+    }
+    setStep("size", "ok", `${files.length} file${files.length === 1 ? "" : "s"}, ${kb(total)} of ${kb(cap)}`);
 
     setStep("send", "busy");
     let up;
-    try { up = await postStrategy(file, team); }
+    try { up = await postStrategy(files, team, entry); }
     catch (e) { setStep("send", "fail", e.message); throw e; }
-    setStep("send", "ok", up.file);
+    setStep("send", "ok", up.files > 1 ? `${up.files} files, starting at ${up.file}` : up.file);
 
     setStep("run", "busy");
     if (!up.available) {
@@ -367,11 +484,13 @@
     if (!canEnter) return;
     if (busy) return;                 // never touch the form mid-upload
     buildFaces();
-    $("join-file").accept = uploadInfo.accept || "";
+    const kbOf = (n) => Math.round((n || 0) / 1024);
     $("join-hint").textContent =
-      `One self-contained file, up to ${Math.round((uploadInfo.max_bytes || 0) / 1024)} KB. `
+      `One file, several files, a folder, or a .zip — up to ${uploadInfo.max_files || 1} files and `
+      + `${kbOf(uploadInfo.max_total_bytes || uploadInfo.max_bytes)} KB in total. `
+      + `Call the file that starts your bot main.py (or Main.java, main.cpp...). `
       + `This machine runs it for you every round. Accepted: `
-      + `${(uploadInfo.languages || []).map((l) => l.extension).join(" ")}.`;
+      + `${(uploadInfo.languages || []).map((l) => l.extension).join(" ")} .zip.`;
     joinForm.querySelector('button[type="submit"]').textContent = "Upload and enter";
   }
 

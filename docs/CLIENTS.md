@@ -10,7 +10,7 @@ This file is about the second half of that: teaching **the server** to start
 your program by itself, so your language shows up in the lobby's Bot picker
 and can be entered in a tournament like any other strategy.
 
-Fifteen languages ship with the repository:
+Sixteen languages ship with the repository:
 
 | Folder | Language | Edit | Needs |
 |---|---|---|---|
@@ -27,11 +27,17 @@ Fifteen languages ship with the repository:
 | `clients/perl/` | Perl | `choose_card()` | perl |
 | `clients/php/` | PHP | `choose_card()` | php |
 | `clients/lua/` | Lua | `choose_card()` | lua + curl |
+| `clients/julia/` | Julia | `choose_card()` | julia 1.9+ (`Downloads`, a stdlib) |
 | `clients/q/` | q / kdb+ | `choose_card` | q — see below |
 | `clients/shell/` | POSIX shell | `choose_card()` | sh, curl, awk |
 
 They all do the same thing and are about a page of plumbing plus a five-line
 strategy. Copy the one closest to your language and replace the strategy.
+
+Each *sample* is a single file so it can be read in one sitting. Your own
+client is not limited that way: a client is a folder, and the manifest's `file`
+only names the one the server starts. Split it into as many files as you like —
+`examples/scout/` is three.
 
 ### q needs an account, once
 
@@ -70,8 +76,8 @@ Two q traps worth knowing if you edit that file, because both fail *silently*:
 
 ## Adding a language
 
-A client is a folder with two files: your program, and a `client.json` that
-says how to build and run it.
+A client is a folder with your program in it and a `client.json` saying how to
+build and run it.
 
 ```
 clients/
@@ -79,6 +85,36 @@ clients/
     main.rs
     client.json
 ```
+
+Your program may be as many files as you want. `file` names the one the server
+starts; an interpreter finds the neighbours itself (an `import`, a `require`,
+an `include`), and a compiler is told about them with `sources`:
+
+```
+clients/
+  rust/
+    main.rs        the entry point: "file"
+    search.rs      a module main.rs declares
+    book.txt       an opening book it reads at startup
+    client.json
+```
+
+```json
+{
+  "language": "C++",
+  "file": "main.cpp",
+  "sources": ["**/*.cpp"],
+  "build": ["{cxx}", "-std=c++17", "-O2", "{sources}", "-o", "{out}"],
+  "output": "player",
+  "run": ["{out}"],
+  "tools": {"cxx": ["g++", "clang++"]}
+}
+```
+
+`{sources}` becomes one argument per matching file, and the client is rebuilt
+when *any* of them is newer than `output` — so editing the fourth file of five
+still triggers a build. Both build and run happen with the client's folder as
+the working directory.
 
 ```json
 {
@@ -105,14 +141,32 @@ where your language went.
 ### Or upload it from the browser
 
 A team on another device does not need access to the repository at all. Start
-the server with `--accept-uploads` and the tournament page offers an **Upload**
-tab: they pick their file, and the server writes it into `uploads/<team>/` with
-exactly the kind of manifest shown above, generated from the file's extension.
-From that moment it is an ordinary client — seatable, enterable, buildable.
+the server with `--accept-uploads` and the tournament page offers a **My
+strategy** form: they pick their submission, and the server writes it into
+`uploads/<team>/` with exactly the kind of manifest shown above, generated from
+the entry point's extension. From that moment it is an ordinary client —
+seatable, enterable, buildable.
 
-One self-contained file per team, up to 1 MB, in any of the languages above.
-The server then *runs* it, which is why it is off unless the flag is given; see
-[API.md](API.md) for the endpoints and what they refuse.
+A submission is a folder, not a file. Any of these work:
+
+* one file — `strategy.py`;
+* several files picked at once — `main.py`, `protocol.py`, `strategy.py`;
+* a folder, picked with **Choose a folder…**, sub-folders and all;
+* a `.zip` of that folder (one wrapping folder is unwrapped, the rest kept).
+
+Up to 1 MB a file, 8 MB and 200 files in total; `__pycache__/`, `.git/`,
+`node_modules/`, `.venv/` and `.DS_Store` are dropped on the way in, so send
+source, not an installed tree. **Name the file that starts
+your bot `main.py`** (or `Main.java`, `main.cpp`, `main.go`, …); `client`,
+`strategy`, `bot`, `player`, `run` and a few more are recognised too, and if
+the server still cannot tell, the page asks instead of guessing. Extra files
+are yours to use: modules, a `go.mod`, a `Cargo.toml`, a table of openings in a
+text file.
+
+One file a submission may not bring is `client.json`: the server writes that
+itself, so the commands it runs are always the ones it generated. The server
+then *runs* your code, which is why all of this is off unless the flag is
+given; see [API.md](API.md) for the endpoints and what they refuse.
 
 To keep a strategy outside the repository, point the server at another folder:
 
@@ -131,7 +185,8 @@ Only `language`, `file` and `run` are required.
 | `language` | Shown in the lobby, e.g. `"q"` |
 | `kind` | The bot key used by the API; default `client-<folder>` |
 | `label` | Shown in the Bot picker; default `<language> client (sample strategy)` |
-| `file` | The source a team edits, relative to the folder |
+| `file` | The entry point: the source the server starts, relative to the folder |
+| `sources` | Every file a build compiles: a glob or a list of them (`["**/*.cpp"]`), relative to the folder |
 | `edit` | The function to replace, for the lobby's hint |
 | `note` | One line about what the sample strategy does |
 | `tools` | Executables needed: `{"node": "node"}`, or alternatives `{"cxx": ["g++", "clang++"]}` |
@@ -148,7 +203,8 @@ Only `language`, `file` and `run` are required.
 
 Placeholders usable in `build`, `run`, `command`, `env` and `output`:
 
-* `{file}` the source, `{dir}` its folder, `{root}` the repository, `{out}` the build output
+* `{file}` the entry point, `{dir}` its folder, `{root}` the repository, `{out}` the build output
+* `{sources}` every file matched by `sources`, as one argument each
 * `{python}` the interpreter running the server
 * every name in `tools` (`{cxx}`, `{node}`, ...) — the absolute path that was found
 * in `run` only: `{server}` `{game}` `{seat}` `{name}` `{avatar}`

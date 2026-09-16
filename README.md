@@ -4,7 +4,7 @@ Server, web UI and bot clients for the Card Nim game.
 
 Author: Sarp Akar, sa9932@nyu.edu
 
-The server is a single Python file with no dependencies (Python 3.9+). It can host
+The server is plain Python with no dependencies (Python 3.9+). It can host
 several games at once, keeps a clock for each player, checks every move, logs the
 time per move and decides the winner. Bots talk to it over HTTP. Humans and
 spectators use the browser.
@@ -101,9 +101,10 @@ which stop the clocks without costing either player time.
 
 - Every match is an ordinary table with its two seats reserved for the
   entrants. The game starts once both have sat down.
-- The bracket page offers two ways in: **My strategy**, which uploads a file
-  the server then runs every round (needs `--accept-uploads`), and **Server
-  bot**, which fills a slot with one of the server's own. Both are played by
+- The bracket page offers two ways in: **My strategy**, which uploads a
+  submission (one file, several, a folder or a `.zip`) the server then runs
+  every round (needs `--accept-uploads`), and **Server bot**, which fills a
+  slot with one of the server's own. Both are played by
   the server, so nobody has to keep a laptop open.
 - The API still takes the other two kinds, they are just not on the page: a
   person playing in the browser (`kind: "human"`) and a program that sits down
@@ -161,7 +162,7 @@ python3 clients/python/client.py --server http://10.18.4.22:8000 --game K7PX --n
 Nothing about the protocol is Python. It is three HTTP calls, and with
 `?format=text` the state comes back as plain `key value` lines, so a client
 needs no JSON parser and no library — only the ability to open a socket.
-Fifteen sample clients ship with the repo, all the same page of plumbing
+Sixteen sample clients ship with the repo, all the same page of plumbing
 around a five-line strategy:
 
 | Folder | Language | Edit | Run it yourself |
@@ -179,14 +180,20 @@ around a five-line strategy:
 | `clients/perl/` | Perl | `choose_card()` | `perl clients/perl/client.pl --game K7PX --name "Team A"` |
 | `clients/php/` | PHP | `choose_card()` | `php clients/php/client.php --game K7PX --name "Team A"` |
 | `clients/lua/` | Lua | `choose_card()` | `lua clients/lua/client.lua --game K7PX --name "Team A"` |
+| `clients/julia/` | Julia | `choose_card()` | `julia clients/julia/client.jl --game K7PX --name "Team A"` |
 | `clients/q/` | q / kdb+ | `choose_card` | `q clients/q/client.q -game K7PX -name "Team A"` (self-check: `-selftest`; needs a free kdb+ from developer.kx.com) |
 | `clients/shell/` | POSIX shell | `choose_card()` | `sh clients/shell/client.sh --game K7PX --name "Team A"` |
 
-Each is one self-contained file: the protocol is three HTTP calls and
-`?format=text` returns plain `key value` lines, so none of them needs a JSON
-parser or any package. C, C++, Rust and Go speak HTTP over a raw socket
-because their standard libraries ship no client; Lua and the shell script use
-curl, because Lua has no sockets at all.
+Each *sample* is a single file, to be read in one sitting — not a limit on
+what you write. None of them needs a JSON parser or any package: C, C++, Rust
+and Go speak HTTP over a raw socket because their standard libraries ship no
+client; Lua and the shell script use curl, because Lua has no sockets at all;
+Julia uses `Downloads`, which ships with it.
+
+Your own entry can be as many files as you like, in as many folders. A client
+is a *folder* with a manifest: `file` names the one the server starts, an
+interpreter finds the neighbours itself, and a compiler is handed them by a
+`sources` glob. An upload is a folder too (see below).
 
 Add `--server http://10.18.4.22:8000` and `--seat 1` as needed; every client
 also reads `CARDNIM_SERVER`, `CARDNIM_GAME`, `CARDNIM_NAME` and `CARDNIM_SEAT`
@@ -242,32 +249,44 @@ python3 server/cardnim_server.py --accept-uploads
 Put the bracket on the projector, and a team scans its QR code with a phone or
 opens the address on their laptop. The QR only appears on your own screen —
 the server checks whether the request came from the machine it is running on,
-so a teammate who scanned it does not see a QR of their own. They type a team name, pick their strategy
-file, and press "Upload and enter". The page checks the file against the
-guidelines one step at a time — type, size, then the server's own answers on
-whether it saved and whether this machine can run it — so a rejected upload
-says which rule it missed rather than just failing. The server writes it into `uploads/<team>/`
-with a generated manifest, builds it if it needs building, and from then on
-runs it for them every round — they can close the laptop.
+so a teammate who scanned it does not see a QR of their own. They type a team
+name, pick their strategy — one file, several files, a whole folder, or a
+`.zip` of one — and press "Upload and enter". The page checks the submission
+one step at a time: that something in it is a language this server runs, the
+sizes, then the server's own answers on whether it saved and whether this
+machine can run it — so a rejected upload says which rule it missed rather than
+just failing. The server writes it into `uploads/<team>/` with a generated
+manifest, builds it if it needs building, and from then on runs it for them
+every round — they can close the laptop.
 
-`examples/` holds two finished submissions you can upload straight away to
-check the path works.
+`examples/` holds three finished submissions you can upload straight away to
+check the path works, one of them (`examples/scout/`) split across three
+files.
 
-Every move of a tournament match is followed by the tournament's `bot_delay`
-(half a second by default) so a room can follow the play. The pause stops both
-clocks, so it costs neither side any time. Without it a match between two
-programs is over in a fifth of a second.
+**A submission is a folder, not a file.** A team may send one file or two
+hundred, in whatever folders they use, in any of the languages under `clients/`
+(`.py .js .ts .rb .R .pl .php .lua .sh .q .jl .c .cc .cpp .go .rs .java`) — up
+to 1 MB a file and 8 MB in total. What the server needs to know is which file
+starts the bot: call it `main.py` (or `Main.java`, `main.cpp`, …) and it is
+found, otherwise the page asks. Everything beside it is theirs: modules a
+`main.py` imports, extra classes javac has to compile, a `go.mod`, a
+`Cargo.toml`, an opening book in a text file.
 
-One self-contained file per team, up to 1 MB, in any of the languages under
-`clients/` (`.py .js .ts .rb .r .pl .php .lua .sh .q .c .cc .cpp .go .rs
-.java`) — the server generates the manifest from the extension. Uploading again replaces that
-team's previous file, so a team can fix a bug and send it back. The Bot picker
+The manifest is the one file a submission may *not* bring: the server generates
+it from the entry point's extension, so the commands it runs are always its own
+(a `client.json` in a submission is dropped). Uploading again replaces that
+team's whole folder, so a team can fix a bug and send it back. The Bot picker
 lists uploaded strategies too, so you can also seat one in an ordinary game.
 
 **This runs other people's code on your machine.** That is what the flag is
 for, and why it is a flag: without it the server accepts no uploads at all.
 Only turn it on for a room you trust, and stop the server when the round is
 over. `uploads/` is gitignored.
+
+Every move of a tournament match is followed by the tournament's `bot_delay`
+(half a second by default) so a room can follow the play. The pause stops both
+clocks, so it costs neither side any time. Without it a match between two
+programs is over in a fifth of a second.
 
 Bot vs bot without humans:
 
@@ -311,18 +330,20 @@ server/
 clients/                 one folder per language, each with a client.json
   python/client.py     library + sample bots (random, greedy)
   c/ cpp/ go/ rust/    compiled: the server builds each on first use
-  java/ javascript/ typescript/ ruby/ r/ perl/ php/ lua/ q/ shell/
+  java/ javascript/ typescript/ ruby/ r/ perl/ php/ lua/ q/ julia/ shell/
 scripts/
   run_match.py         bot vs bot matches
-examples/              two finished submissions, for testing the upload path
+examples/              three finished submissions, for testing the upload path
   hungry.py            Python, always the biggest card that fits
   cautious.rb          Ruby, always the smallest
+  scout/               Python in three files: main.py, protocol.py, strategy.py
 uploads/               strategies teams sent from their own devices (gitignored)
 tests/
   test_engine.py
   test_api.py          end to end over HTTP
   test_tournament.py   the bracket, reserved seats, tournaments over HTTP
-  test_clients.py      the manifests, and a new language playing a real game
+  test_clients.py      the manifests, submissions of several files, and a new
+                       language playing a real game
 docs/
   API.md               protocol
   CLIENTS.md           writing a client in any language, and uploading one
@@ -334,9 +355,11 @@ docs/
 python3 -m pytest tests/ -q
 ```
 
-80 tests, about 25 seconds. Includes the 5 stones / cards 1-3 example (second
-player wins), full games over HTTP with timeouts and long polling, and a
-language added while the server is running that plays a game and a bracket.
+98 tests, about 30 seconds. Includes the 5 stones / cards 1-3 example (second
+player wins), full games over HTTP with timeouts and long polling, a language
+added while the server is running that plays a game and a bracket, and
+submissions of several files — a folder, a `.zip`, a C++ bot split over two
+translation units — uploaded and played to the end.
 
 ## Problems
 
