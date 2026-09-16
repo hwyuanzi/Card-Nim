@@ -689,48 +689,86 @@
     </div>`;
   }
 
+  /* ---------------------------------------------------- what changes per move
+
+     A bracket is redrawn on every move of the live match.  Only three things
+     inside a card actually change while a match runs -- whose turn it is, the
+     line under each name, and the line along the bottom -- so they are worked
+     out here and patched into the card that is already on screen.  Rebuilding
+     the card instead made it blink: the avatars were thrown away and drawn
+     again several times a second, in every match of the bracket, including the
+     ones that had finished hours ago. */
+
+  function sideState(m, i) {
+    const gs = m.game_state;
+    const eid = m.slots[i];
+    const e = eid ? entrant(eid) : null;
+    const seat = m.seats && eid ? (m.seats[0] === eid ? 1 : m.seats[1] === eid ? 2 : 0) : 0;
+    const won = Boolean(m.winner && m.winner === eid);
+    const lost = Boolean(m.winner && eid && m.winner !== eid);
+    const onTurn = Boolean(gs && gs.status === "playing" && !gs.paused && seat && gs.turn === seat);
+    const claimed = Boolean(gs && seat && gs.occupied && gs.occupied[seat - 1]);
+    let meta = "";
+    if (e && gs && gs.status === "waiting") meta = claimed ? "seated" : "not seated yet";
+    else if (e && gs && gs.status === "playing") meta = gs.paused ? "paused" : onTurn ? "to move" : "";
+    else if (e && gs && gs.cards_left && seat) meta = `${gs.cards_left[seat - 1]} cards left`;
+    else if (won) meta = m.walkover ? "walkover" : m.bye ? "bye" : "won";
+    return { e, seat, won, lost, onTurn, meta };
+  }
+
+  /* The line along the bottom of a card.  `text` is plain text, escaped by
+     whoever puts it on the page, so the same value can be patched into a node
+     with textContent. */
+  function matchStatus(m) {
+    const gs = m.game_state;
+    if (m.status === "bye") return { text: "No opponent in this round", pill: "" };
+    if (m.status === "pending") return { text: "Waiting for the previous round", pill: "" };
+    if (m.status === "ready") {
+      return { text: anyLive() ? "Next up" : (canControl ? "Ready to start" : "Waiting for the organiser"), pill: "" };
+    }
+    if (m.status === "waiting") return { text: "Waiting for the players to sit down", pill: "waiting" };
+    if (m.status === "playing") {
+      return { pill: gs.paused ? "waiting" : "playing",
+               text: `${gs.stones} of ${gs.initial_stones} stones · ${plural(gs.moves, "move")}${gs.paused ? " · paused" : ""}` };
+    }
+    if (m.status === "done") {
+      const w = entrant(m.winner);
+      return { pill: "finished",
+               text: `${w ? w.name : "?"} won`
+                 + (m.walkover ? " by walkover" : gs && gs.reason ? ` · ${gs.reason}` : "") };
+    }
+    return { text: "", pill: "" };
+  }
+
+  /* Everything a card's *shape* depends on.  While this is unchanged the card
+     on screen is patched; when it changes the bracket is drawn again. */
+  function matchShape(m) {
+    const gs = m.game_state || {};
+    return [m.status, m.winner, m.game, m.bye, m.walkover, m.slots.join(","),
+            (m.seats || []).join(","), gs.status, gs.paused,
+            picking() === `${m.round}-${m.index}`, anyLive(), canControl,
+            Boolean(me && m.slots.includes(me.id)),
+            Boolean(t.you && t.you.game === m.game && !t.you.claimed)].join("|");
+  }
+
   /* A match in the bracket: the two sides, the result, and the buttons.
      Clicking it shows that match's table in the right-hand pane. */
   function matchHtml(m) {
     const gs = m.game_state;
     const mine = Boolean(me && m.slots.includes(me.id));
+    const key = `${m.round}-${m.index}`;
     const sides = [0, 1].map((i) => {
-      const eid = m.slots[i];
-      const e = eid ? entrant(eid) : null;
-      const seat = m.seats && eid ? (m.seats[0] === eid ? 1 : m.seats[1] === eid ? 2 : 0) : 0;
-      const won = Boolean(m.winner && m.winner === eid);
-      const lost = Boolean(m.winner && eid && m.winner !== eid);
-      const onTurn = Boolean(gs && gs.status === "playing" && !gs.paused && seat && gs.turn === seat);
-      const claimed = Boolean(gs && seat && gs.occupied && gs.occupied[seat - 1]);
-      let meta = "";
-      if (e && gs && gs.status === "waiting") meta = claimed ? "seated" : "not seated yet";
-      else if (e && gs && gs.status === "playing") meta = gs.paused ? "paused" : onTurn ? "to move" : "";
-      else if (e && gs && gs.cards_left && seat) meta = `${gs.cards_left[seat - 1]} cards left`;
-      else if (won) meta = m.walkover ? "walkover" : m.bye ? "bye" : "won";
+      const { e, seat, won, lost, onTurn, meta } = sideState(m, i);
       const name = e ? esc(e.name) : m.bye ? "Bye" : "To be decided";
-      return `<div class="side${won ? " winner" : ""}${lost ? " loser" : ""}${onTurn ? " turn" : ""}">
+      return `<div class="side${won ? " winner" : ""}${lost ? " loser" : ""}${onTurn ? " turn" : ""}" data-side="${key}-${i}">
         <span class="seat-tag ${seat ? "s" + seat : "none"}">${seat || "·"}</span>
         ${e ? `<img src="${avatarSrc(e.avatar)}" alt="">` : '<span class="ph"></span>'}
-        <span class="text"><span class="name${e ? "" : " tbd"}">${name}${e && e.bot ? ' <span class="badge">bot</span>' : ""}${me && e && e.id === me.id ? ' <span class="badge blue">you</span>' : ""}</span>${meta ? `<span class="meta">${meta}</span>` : ""}</span>
+        <span class="text"><span class="name${e ? "" : " tbd"}">${name}${e && e.bot ? ' <span class="badge">bot</span>' : ""}${me && e && e.id === me.id ? ' <span class="badge blue">you</span>' : ""}</span><span class="meta">${esc(meta)}</span></span>
         ${won ? '<svg class="mark"><use href="#i-check"/></svg>' : ""}
       </div>`;
     }).join("");
 
-    let status = "", pill = "";
-    if (m.status === "bye") status = "No opponent in this round";
-    else if (m.status === "pending") status = "Waiting for the previous round";
-    else if (m.status === "ready") status = anyLive() ? "Next up" : (canControl ? "Ready to start" : "Waiting for the organiser");
-    else if (m.status === "waiting") { pill = "waiting"; status = "Waiting for the players to sit down"; }
-    else if (m.status === "playing") {
-      pill = gs.paused ? "waiting" : "playing";
-      status = `${gs.stones} of ${gs.initial_stones} stones · ${plural(gs.moves, "move")}${gs.paused ? " · paused" : ""}`;
-    } else if (m.status === "done") {
-      pill = "finished";
-      const w = entrant(m.winner);
-      status = `${w ? esc(w.name) : "?"} won` + (m.walkover ? " by walkover" : gs && gs.reason ? ` · ${esc(gs.reason)}` : "");
-    }
-
-    const key = `${m.round}-${m.index}`;
+    const { text: status, pill } = matchStatus(m);
     let actions = "";
     // matches wait for the organiser; only one can be running at a time
     if (m.status === "ready" && t.status === "running" && canControl) {
@@ -749,7 +787,7 @@
     const picked = picking() === key;
     return `<div class="match${live ? " live" : ""}${mine && m.winner === null ? " mine" : ""}${picked ? " picked" : ""}" data-key="${key}">
       ${m.game ? `<button class="head-row" type="button" data-show="${key}">${sides}</button>` : sides}
-      <div class="foot">${pill ? `<span class="status ${pill}"><span class="dot"></span>${status}</span>` : `<span>${status}</span>`}<span class="spacer"></span>${actions}</div>
+      <div class="foot">${pill ? `<span class="status ${pill}"><span class="dot"></span><span class="status-text">${esc(status)}</span></span>` : `<span class="status-text">${esc(status)}</span>`}<span class="spacer"></span>${actions}</div>
     </div>`;
   }
 
@@ -994,7 +1032,45 @@
     return `<a class="btn" href="/">Lobby</a>`;
   }
 
+  /* Put `html` into an element only when it is not already there.  The page
+     polls; most of what it draws is the same as it was a moment ago, and
+     replacing a subtree throws away its images, its scroll and anything the
+     pointer was over. */
+  const painted = new WeakMap();        // element -> the HTML it is showing
+  function paint(el, html) {
+    if (!el || painted.get(el) === html) return false;
+    painted.set(el, html);
+    el.innerHTML = html;
+    return true;
+  }
+
+  /* The bracket between two moves of the same match: no card is rebuilt, the
+     handful of values that changed are written into the cards already on
+     screen. */
+  function patchBracket() {
+    const box = $("detail");
+    for (const round of t.rounds || []) {
+      for (const m of round.matches) {
+        const key = `${m.round}-${m.index}`;
+        const card = box.querySelector(`.match[data-key="${key}"]`);
+        if (!card) continue;
+        [0, 1].forEach((i) => {
+          const side = card.querySelector(`[data-side="${key}-${i}"]`);
+          if (!side) return;
+          const state = sideState(m, i);
+          side.classList.toggle("turn", state.onTurn);
+          const meta = side.querySelector(".meta");
+          if (meta && meta.textContent !== state.meta) meta.textContent = state.meta;
+        });
+        const line = card.querySelector(".status-text");
+        const { text } = matchStatus(m);
+        if (line && line.textContent !== text) line.textContent = text;
+      }
+    }
+  }
+
   let lastSignature = null;
+  let lastShape = null;
   function render() {
     if (!t) return;
     document.title = `${title()} — Card Nim`;
@@ -1010,35 +1086,55 @@
     const yh = youHtml();
     you.hidden = !yh;
     you.className = "you-card" + (t.you && (t.you.status === "play" || t.you.status === "champion") ? " play" : "");
-    you.innerHTML = yh;
-    $("settings").innerHTML = settingsHtml();
-    $("entrants").innerHTML = entrantsHtml();
+    paint(you, yh);
+    paint($("settings"), settingsHtml());
+    paint($("entrants"), entrantsHtml());
     renderJoin();
     drawQr();
-    $("actions").innerHTML = actionsHtml();
-    // Replacing the bracket's HTML throws away how far it was scrolled, so a
-    // poll would yank it back to the left mid-drag. Keep the position across
-    // the redraw, so a poll cannot yank it back while you are scrolling.
-    const keptScroll = (() => {
-      const box = $("detail").querySelector(".bracket");
-      return box ? box.scrollLeft : null;
-    })();
-    $("detail").innerHTML = `<div><div class="group-title">Bracket</div>${bracketHtml()}</div>`;
-    if (keptScroll !== null) {
-      const box = $("detail").querySelector(".bracket");
-      if (box) box.scrollLeft = keptScroll;
+    paint($("actions"), actionsHtml());
+    // The bracket is drawn again only when a card changes shape: a match
+    // starting, ending, being pinned. Between the moves of a match the cards
+    // already on screen are patched, so nothing blinks and nothing is lost --
+    // not the avatars, and not how far the bracket was scrolled.
+    const shape = (t.rounds || []).map((r) => r.matches.map(matchShape).join(";")).join("|")
+      + "#" + [t.status, t.entrants.length, canControl].join(",");
+    if (shape === lastShape && $("detail").querySelector(".match")) {
+      patchBracket();
+    } else {
+      lastShape = shape;
+      const keptScroll = (() => {
+        const box = $("detail").querySelector(".bracket");
+        return box ? box.scrollLeft : null;
+      })();
+      $("detail").innerHTML = `<div><div class="group-title">Bracket</div>${bracketHtml()}</div>`;
+      if (keptScroll !== null) {
+        const box = $("detail").querySelector(".bracket");
+        if (box) box.scrollLeft = keptScroll;
+      }
     }
     $("table-title").textContent = tableTitleHtml();
-    $("table-actions").innerHTML = tableActionsHtml();
-    $("livetable").innerHTML = tablePaneHtml();
+    paint($("table-actions"), tableActionsHtml());
+    paint($("livetable"), tablePaneHtml());
     wire();
     celebrateChampion();
     celebrateMatch();
   }
 
+  /* Buttons now outlive a redraw -- a card that did not change is left alone --
+     so wire() has to be safe to call again on the same element.  Each one is
+     marked when it is given its handler. */
   function wire() {
     const fail = (where) => (e) => { const el = $(where); if (el) el.textContent = e.message; };
-    const on = (id, fn) => { const el = $(id); if (el) el.addEventListener("click", fn); };
+    const bind = (el, fn) => {
+      if (!el || el.dataset.wired) return;
+      el.dataset.wired = "1";
+      el.addEventListener("click", fn);
+    };
+    const on = (id, fn) => bind($(id), fn);
+    const each = (root, selector, fn) => {
+      const box = $(root);
+      if (box) box.querySelectorAll(selector).forEach((b) => bind(b, () => fn(b)));
+    };
     on("start", () => { $("start").disabled = true; start().catch((e) => { $("start").disabled = false; $("title").textContent = e.message; }); });
     on("abort-btn", () => { confirmAbort = true; render(); });
     on("abort-no", () => { confirmAbort = false; render(); });
@@ -1052,15 +1148,16 @@
     on("withdraw", () => { $("withdraw").disabled = true; withdraw().catch(fail("you-error")); });
     on("forget", () => { me = null; saveMe(); lastSignature = null; refreshNow(); });
     on("sit", () => { const b = $("sit"); b.disabled = true; sitDown(b.dataset.game, Number(b.dataset.seat)).catch((e) => { b.disabled = false; fail("you-error")(e); }); });
-    $("entrants").querySelectorAll("[data-remove]").forEach((b) => b.addEventListener("click", () => {
+    each("entrants", "[data-remove]", (b) => {
       b.disabled = true;
       const id = Number(b.dataset.remove);
       (me && me.id === id ? withdraw() : removeBot(id)).catch((e) => { b.disabled = false; $("title").textContent = e.message; });
-    }));
-    $("detail").querySelectorAll("[data-sit]").forEach((b) => b.addEventListener("click", () => {
+    });
+    const sitHere = (b) => {
       b.disabled = true;
       sitDown(b.dataset.sit, Number(b.dataset.seat)).catch((e) => { b.disabled = false; $("title").textContent = e.message; });
-    }));
+    };
+    each("detail", "[data-sit]", sitHere);
     const startMatch = (b) => {
       const [round, index] = b.dataset.play.split("-").map(Number);
       b.disabled = true;
@@ -1068,27 +1165,22 @@
         .then(accept)
         .catch((e) => { b.disabled = false; $("title").textContent = e.message; });
     };
-    $("detail").querySelectorAll("[data-play]").forEach((b) => b.addEventListener("click", () => startMatch(b)));
-    $("table-actions").querySelectorAll("[data-play]").forEach((b) => b.addEventListener("click", () => startMatch(b)));
-    $("detail").querySelectorAll("[data-show]").forEach((b) => b.addEventListener("click", () => {
+    each("detail", "[data-play]", startMatch);
+    each("table-actions", "[data-play]", startMatch);
+    each("detail", "[data-show]", (b) => {
       pinned = b.dataset.show === picking() ? null : b.dataset.show;
       lastSignature = null;
       render();
-    }));
-    $("detail").querySelectorAll("[data-pause], [data-resume]").forEach((b) => b.addEventListener("click", () => {
+    });
+    const holdOrResume = (b) => {
       const id = b.dataset.pause || b.dataset.resume;
       b.disabled = true;
       api("POST", `/api/games/${id}/${b.dataset.pause ? "pause" : "resume"}`)
         .then(refreshNow)
         .catch((e) => { b.disabled = false; $("title").textContent = e.message; });
-    }));
-    $("table-actions").querySelectorAll("[data-pause], [data-resume]").forEach((b) => b.addEventListener("click", () => {
-      const id = b.dataset.pause || b.dataset.resume;
-      b.disabled = true;
-      api("POST", `/api/games/${id}/${b.dataset.pause ? "pause" : "resume"}`)
-        .then(refreshNow)
-        .catch((e) => { b.disabled = false; $("title").textContent = e.message; });
-    }));
+    };
+    each("detail", "[data-pause], [data-resume]", holdOrResume);
+    each("table-actions", "[data-pause], [data-resume]", holdOrResume);
   }
 
   if (!tid) {
