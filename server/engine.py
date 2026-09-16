@@ -188,6 +188,7 @@ class Game:
         self._clock = clock
         self._turn_started: Optional[float] = None  # monotonic time the current turn began
         self.paused = False                 # play halted; clocks stopped, moves refused
+        self.paced = False                  # ...by the tournament's pacing, not by the room
         self.seats = {
             1: Seat(1, cards=set(range(1, cards + 1)), time_remaining=self.time_limit),
             2: Seat(2, cards=set(range(1, cards + 1)), time_remaining=self.time_limit),
@@ -425,18 +426,30 @@ class Game:
             self._finish(self.other(self.turn),
                          f"{loser.name} has no card small enough for {self.stones} stone{'s' if self.stones != 1 else ''}")
 
-    def pause(self, now: Optional[float] = None) -> None:
+    def pause(self, now: Optional[float] = None, paced: bool = False) -> None:
         """Purpose: halt play so the room can talk over a position.
+        Inputs:  `paced` marks the short automatic pause a tournament takes
+                 between moves, which is not the room holding the game and is
+                 not worth telling anyone about.
         Side effects: charges the mover for the time they have already spent,
         then stops the clock.  Moves are refused and the ticker leaves the
-        game alone until resume().  Bumps version.  A no-op unless playing."""
-        if self.status != STATUS_PLAYING or self.paused:
+        game alone until resume().  Bumps version.  A no-op unless playing.
+
+        Pausing a game that is already pacing hands it to the room: the pause
+        stays, but it is now theirs to end."""
+        if self.status != STATUS_PLAYING:
+            return
+        if self.paused:
+            if self.paced and not paced:
+                self.paced = False
+                self._touch()
             return
         now = self._clock() if now is None else now
         seat = self.seats[self.turn]
         seat.time_remaining = max(0.0, seat.time_remaining - self.elapsed_this_turn(now))
         self._turn_started = None           # elapsed_this_turn is 0 from here
         self.paused = True
+        self.paced = bool(paced)
         self._touch()
 
     def resume(self, now: Optional[float] = None) -> None:
@@ -445,6 +458,7 @@ class Game:
         if self.status != STATUS_PLAYING or not self.paused:
             return
         self.paused = False
+        self.paced = False
         self._turn_started = self._clock() if now is None else now
         self._touch()
 
@@ -538,6 +552,7 @@ class Game:
                                round(self.time_remaining(2, now), 3)],
             "turn": self.turn if self.status == STATUS_PLAYING else None,
             "paused": self.paused,
+            "paced": self.paced,
             "winner": self.winner,
             "reason": self.reason,
             "moves": len(self.moves),
@@ -580,6 +595,7 @@ class Game:
             "time_limit": self.time_limit,
             "turn": self.turn if self.status == STATUS_PLAYING else None,
             "paused": self.paused,
+            "paced": self.paced,
             "players": players,
             "moves": [
                 {

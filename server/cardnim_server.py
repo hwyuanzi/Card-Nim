@@ -295,12 +295,14 @@ class GameStore:
         t = self.tournaments.get(info["id"])
         if t is None or t.bot_delay <= 0:
             return
-        game.pause()
+        game.pause(paced=True)
 
         def wake() -> None:
             time.sleep(t.bot_delay)
             with self.lock:
-                if game.status == STATUS_PLAYING and game.paused:
+                # only undo our own pause: if the room held the game while we
+                # were asleep, it stays held until they say otherwise
+                if game.status == STATUS_PLAYING and game.paused and game.paced:
                     game.resume()
                     self.changed(game)
         threading.Thread(target=wake, name=f"pace-{game.id}", daemon=True).start()

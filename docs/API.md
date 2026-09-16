@@ -285,9 +285,11 @@ simply call again. The Python sample client does all of this with
 
 `bot_delay` paces every match, not just the server's own bots: after each
 move the game is paused for that long, so a client -- which answers as fast as
-the socket allows -- plays at a speed a room can follow. The pause stops both
-clocks, so it costs neither player any time, and `getstate` holds its caller
-in the long poll rather than waking it into a move that would be refused.
+the socket allows -- plays at a speed a room can follow. Such a pause is marked
+`paced` in the state, to tell it apart from the room holding the game. It stops
+both clocks, so it costs neither player any time, and `getstate` holds its
+caller in the long poll rather than waking it into a move that would be
+refused.
 
 ### `POST /api/tournaments/{id}/play`
 
@@ -311,7 +313,12 @@ resuming starts it again from that moment, so the pause costs neither player
 anything. While paused a move gets **409** and the clock cannot run out. Both
 return the [state](#state-object) and need no authentication.
 
-`paused` appears in the state and in the game summary.
+`paused` appears in the state and in the game summary, next to `paced`.
+`paced` is true for the short pause a tournament takes after every move (see
+`bot_delay`), which is the software keeping the play watchable rather than the
+room stopping the game: the bracket draws a paced match as playing, and the
+pause endpoint above takes the game over when someone presses Pause during
+one. A pause the room asked for is never paced.
 
 ### `POST /api/tournaments/{id}/walkover`
 
@@ -363,7 +370,7 @@ aborted and replayed.
 {
   "id": "K7PX", "label": "Round 1", "status": "playing", "version": 9,
   "initial_stones": 100, "stones": 37, "num_cards": 25, "time_limit": 120.0,
-  "turn": 2,
+  "turn": 2, "paused": false, "paced": false,
   "players": [
     {"seat": 1, "name": "Alice", "occupied": true, "avatar": 12,
      "cards": [1, 2, 4, 5, 6, 8, 9, ...], "playable": [1, 2, 4, ...],
@@ -384,6 +391,8 @@ aborted and replayed.
 
 * `status`: `waiting` (fewer than two players), `playing`, `finished`.
 * `turn`: seat to move, `null` unless playing.
+* `paused`: play is halted and moves are refused. `paced` narrows that to the
+  pause a tournament takes between moves, which a page should draw as play.
 * `players[i].reserved`: true when a tournament keeps the seat for that
   entrant (the name is shown before they sit down).
 * `tournament`: `null`, or `{"id", "label", "round", "round_name", "match",

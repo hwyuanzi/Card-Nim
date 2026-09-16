@@ -645,6 +645,9 @@ def test_a_tournament_match_plays_at_a_watchable_speed(base_url):
         time.sleep(0.05)
     took = time.time() - started
     moves = len(g["moves"])
+    # the pauses it takes between moves are its own, not the room holding the
+    # game: the bracket draws them as play, so a card does not flash "paused"
+    assert g["paced"] is False and g["paused"] is False, "it ended mid-pause"
     assert g["status"] == "finished" and moves >= 4, (g["status"], moves)
     # roughly one delay per move, give or take process start-up
     assert took >= moves * delay * 0.6, f"{moves} moves in {took:.2f}s is too fast to watch"
@@ -767,3 +770,33 @@ def test_open_controls_puts_it_back_the_way_it_was(base_url, monkeypatch):
     assert call(base, "POST", f"/api/tournaments/{tid}/start")[0] == 200
     _, health = call(base, "GET", "/api/health")
     assert health["organiser"] is True
+
+
+def test_the_pacing_pause_is_marked_as_its_own(base_url):
+    """`paced` is what lets the bracket draw a paced match as playing.  The
+    room's own Pause is not paced, and takes over one that is."""
+    base, _ = base_url
+    _, t = call(base, "POST", "/api/tournaments",
+                {"stones": 30, "cards": 10, "time_limit": 60, "bot_delay": 20})
+    tid = t["id"]
+    for kind in ("client-python", "client-python"):
+        status, _ = call(base, "POST", f"/api/tournaments/{tid}/join", {"kind": kind, "name": kind})
+        if status != 200:
+            pytest.skip("the python client cannot be launched here")
+    call(base, "POST", f"/api/tournaments/{tid}/start")
+    gid = start_next_match(base, tid)
+
+    deadline = time.time() + 40                 # wait for the first paced pause
+    while time.time() < deadline:
+        _, g = call(base, "GET", f"/api/games/{gid}")
+        if g["paused"]:
+            break
+        time.sleep(0.1)
+    assert g["paused"] and g["paced"], "a tournament pause should be marked paced"
+
+    # the room taking over: still paused, no longer the tournament's to end
+    _, g = call(base, "POST", f"/api/games/{gid}/pause")
+    assert g["paused"] is True and g["paced"] is False
+    _, g = call(base, "POST", f"/api/games/{gid}/resume")
+    assert g["paused"] is False and g["paced"] is False
+    call(base, "POST", f"/api/tournaments/{tid}/abort")

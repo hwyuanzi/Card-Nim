@@ -368,7 +368,7 @@ docs/
 python3 -m pytest tests/ -q
 ```
 
-105 tests, about 30 seconds. They cover the 5 stones / cards 1-3 example (the
+108 tests, about 30 seconds. They cover the 5 stones / cards 1-3 example (the
 second player wins), full games over HTTP with timeouts and long polling, a
 language added while the server is running that plays a game and a bracket,
 submissions of several files (a folder, a `.zip`, and a C++ bot split over two

@@ -699,6 +699,12 @@
      again several times a second, in every match of the bracket, including the
      ones that had finished hours ago. */
 
+  /* A tournament pauses itself for a moment after every move so the room can
+     follow the play (the bracket's bot_delay).  That is not the game being
+     held, and saying so would make every card flash "paused" twice a second,
+     so only a pause the room asked for counts here. */
+  const heldStill = (gs) => Boolean(gs && gs.paused && !gs.paced);
+
   function sideState(m, i) {
     const gs = m.game_state;
     const eid = m.slots[i];
@@ -706,11 +712,11 @@
     const seat = m.seats && eid ? (m.seats[0] === eid ? 1 : m.seats[1] === eid ? 2 : 0) : 0;
     const won = Boolean(m.winner && m.winner === eid);
     const lost = Boolean(m.winner && eid && m.winner !== eid);
-    const onTurn = Boolean(gs && gs.status === "playing" && !gs.paused && seat && gs.turn === seat);
+    const onTurn = Boolean(gs && gs.status === "playing" && !heldStill(gs) && seat && gs.turn === seat);
     const claimed = Boolean(gs && seat && gs.occupied && gs.occupied[seat - 1]);
     let meta = "";
     if (e && gs && gs.status === "waiting") meta = claimed ? "seated" : "not seated yet";
-    else if (e && gs && gs.status === "playing") meta = gs.paused ? "paused" : onTurn ? "to move" : "";
+    else if (e && gs && gs.status === "playing") meta = heldStill(gs) ? "paused" : onTurn ? "to move" : "";
     else if (e && gs && gs.cards_left && seat) meta = `${gs.cards_left[seat - 1]} cards left`;
     else if (won) meta = m.walkover ? "walkover" : m.bye ? "bye" : "won";
     return { e, seat, won, lost, onTurn, meta };
@@ -728,8 +734,8 @@
     }
     if (m.status === "waiting") return { text: "Waiting for the players to sit down", pill: "waiting" };
     if (m.status === "playing") {
-      return { pill: gs.paused ? "waiting" : "playing",
-               text: `${gs.stones} of ${gs.initial_stones} stones · ${plural(gs.moves, "move")}${gs.paused ? " · paused" : ""}` };
+      return { pill: heldStill(gs) ? "waiting" : "playing",
+               text: `${gs.stones} of ${gs.initial_stones} stones · ${plural(gs.moves, "move")}${heldStill(gs) ? " · paused" : ""}` };
     }
     if (m.status === "done") {
       const w = entrant(m.winner);
@@ -745,7 +751,7 @@
   function matchShape(m) {
     const gs = m.game_state || {};
     return [m.status, m.winner, m.game, m.bye, m.walkover, m.slots.join(","),
-            (m.seats || []).join(","), gs.status, gs.paused,
+            (m.seats || []).join(","), gs.status, heldStill(gs),
             picking() === `${m.round}-${m.index}`, anyLive(), canControl,
             Boolean(me && m.slots.includes(me.id)),
             Boolean(t.you && t.you.game === m.game && !t.you.claimed)].join("|");
@@ -775,7 +781,7 @@
       actions += `<button class="btn blue" type="button" data-play="${key}"${anyLive() ? " disabled title=\"Another match is still being played\"" : ""}><svg class="icon"><use href="#i-play"/></svg>Start match</button>`;
     }
     if (gs && m.status === "playing") {
-      actions += gs.paused
+      actions += heldStill(gs)
         ? `<button class="btn blue" type="button" data-resume="${esc(m.game)}"><svg class="icon"><use href="#i-play"/></svg>Resume</button>`
         : `<button class="btn" type="button" data-pause="${esc(m.game)}"><svg class="icon"><use href="#i-pause"/></svg>Pause</button>`;
     }
@@ -924,7 +930,7 @@
       seats: slots,                 // no coin toss yet: show them in bracket order
       game_state: {
         status: "waiting", stones: t.stones, initial_stones: t.stones, cards: t.cards,
-        moves: 0, turn: null, paused: false, winner: null, reason: "",
+        moves: 0, turn: null, paused: false, paced: false, winner: null, reason: "",
         time_limit: t.time_limit,
         cards_left: [t.cards, t.cards],
         time_remaining: [t.time_limit, t.time_limit],
@@ -960,7 +966,7 @@
     const gs = m.game_state;
     caption = gs.status === "finished"
       ? `<b>${esc((entrant(m.winner) || {}).name || "?")}</b> won · ${esc(gs.reason || "")}`
-      : gs.paused ? "<b>Paused</b> · the clocks are stopped"
+      : heldStill(gs) ? "<b>Paused</b> · the clocks are stopped"
       : gs.status === "waiting" ? "Waiting for both sides to sit down"
       : `${plural(gs.moves, "move")} played · <b>${gs.stones}</b> stones left`;
     return `<div class="table-live"><div class="table">
@@ -990,7 +996,7 @@
     const gs = m.game_state;
     let out = "";
     if (gs && gs.status === "playing") {
-      out += gs.paused
+      out += heldStill(gs)
         ? `<button class="btn blue" type="button" data-resume="${esc(m.game)}"><svg class="icon"><use href="#i-play"/></svg>Resume</button>`
         : `<button class="btn" type="button" data-pause="${esc(m.game)}"><svg class="icon"><use href="#i-pause"/></svg>Pause</button>`;
     }

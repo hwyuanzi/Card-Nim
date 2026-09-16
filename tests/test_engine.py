@@ -295,3 +295,42 @@ def test_a_card_must_be_a_whole_number():
         g, _ = seated_game(20, 6)
         g.play(1, good)
         assert g.moves[-1].card == expected, good
+
+
+def test_a_paced_pause_is_not_the_room_holding_the_game():
+    """A tournament pauses itself for a moment after every move so people can
+    follow the play.  The bracket would flash "paused" twice a second if that
+    looked the same as the room stopping the game, so the two are told apart."""
+    g, clock = seated_game(30, 6)
+    g.pause(paced=True)
+    assert g.paused is True and g.paced is True
+    assert g.to_dict()["paced"] is True and g.summary()["paced"] is True
+
+    g.resume()
+    assert g.paused is False and g.paced is False
+
+    # the room pausing outright is theirs, and so is a pause it takes over
+    g.pause()
+    assert g.paused is True and g.paced is False
+    g.resume()
+    g.pause(paced=True)
+    g.pause()                       # someone presses Pause during the wait
+    assert g.paused is True and g.paced is False, "the room now holds it"
+    g.resume()
+    assert g.paused is False
+
+    # and pacing a game that the room already holds leaves it theirs
+    g.pause()
+    g.pause(paced=True)
+    assert g.paced is False
+
+
+def test_a_pause_costs_the_mover_nothing_however_it_was_made():
+    g, clock = seated_game(30, 6)
+    clock.t += 5                    # five seconds of thinking
+    g.pause(paced=True)
+    clock.t += 60                   # a minute of waiting
+    g.resume()
+    clock.t += 1
+    assert 115.0 > g.time_remaining(1, clock.t) > 113.0, g.time_remaining(1, clock.t)
+    assert g.time_remaining(2, clock.t) == 120.0
