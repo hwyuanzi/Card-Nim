@@ -43,9 +43,13 @@
         <form class="join-card" id="join-form" autocomplete="off" hidden>
           <div class="group-title">Enter the tournament</div>
           <label class="field"><span class="k">Name</span><input name="name" type="text" maxlength="36" placeholder="Your name or team" autocomplete="off"></label>
-          <label class="field"><span class="k">Strategy</span><input type="file" id="join-file" name="file" multiple></label>
-          <div class="pick-row">
-            <button class="btn small" type="button" id="join-folder-btn">Choose a folder…</button>
+          <div class="field">
+            <span class="k">Strategy</span>
+            <div class="pick-row">
+              <button class="btn small" type="button" id="join-file-btn">Choose files…</button>
+              <button class="btn small" type="button" id="join-folder-btn">Choose a folder…</button>
+            </div>
+            <input type="file" id="join-file" name="file" multiple hidden>
             <input type="file" id="join-folder" webkitdirectory directory multiple hidden>
             <span class="picked" id="join-picked"></span>
           </div>

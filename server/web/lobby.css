@@ -471,9 +471,13 @@ h1, h2, h3 { margin: 0; font-weight: 600; letter-spacing: -0.01em; line-height: 
 .join-card.working .field, .join-card.working .faces { opacity: 0.55; pointer-events: none; }
 .join-card.working .hint { visibility: hidden; }
 
-/* a submission can be a whole folder, so the form says what it is about to
-   send and which file it thinks starts the bot */
-.pick-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: -4px; }
+/* A submission can be one file, several, or a whole folder.  The two pickers
+   are buttons rather than a file input, so they match each other instead of
+   showing the browser's own "Choose Files" control next to a styled button;
+   the inputs behind them are hidden and opened by click.  Underneath, the form
+   says what it is about to send and which file it thinks starts the bot. */
+.pick-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.pick-row .btn { flex: 1 1 auto; }          /* the two pickers share the row evenly */
 .picked { font-size: 11px; color: var(--secondary); min-width: 0; word-break: break-word; }
 .picked b { font-weight: 600; color: var(--text); }
 

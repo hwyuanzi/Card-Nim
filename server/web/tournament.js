@@ -203,6 +203,7 @@
   }
   $("join-file").addEventListener("change", () => takePick($("join-file"), $("join-folder")));
   $("join-folder").addEventListener("change", () => takePick($("join-folder"), $("join-file")));
+  $("join-file-btn").addEventListener("click", () => $("join-file").click());
   $("join-folder-btn").addEventListener("click", () => $("join-folder").click());
 
   joinForm.addEventListener("submit", (ev) => {
@@ -212,7 +213,7 @@
     err.textContent = "";
     const name = joinForm.elements.name.value.trim();
     if (!name) { err.textContent = "Type a name first."; joinForm.elements.name.focus(); return; }
-    if (!picked.length) { err.textContent = "Choose your strategy first."; $("join-file").focus(); return; }
+    if (!picked.length) { err.textContent = "Choose your strategy first."; $("join-file-btn").focus(); return; }
 
     busy = true;
     const submit = joinForm.querySelector('button[type="submit"]');
