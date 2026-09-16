@@ -227,7 +227,7 @@ class GameStore:
     # ------------------------------------------------------------ tournaments
 
     def create_tournament(self, stones: int, cards: int, time_limit: float, label: str = "",
-                          bot_delay: float = 0.5) -> Tournament:
+                          bot_delay: float = 1.5) -> Tournament:
         """Purpose: open a new tournament for entries.
         Outputs: the Tournament.  Side effects: registers it; forgets the
         oldest finished tournaments past MAX_TOURNAMENTS; may raise ValueError."""
@@ -748,16 +748,45 @@ class Handler(BaseHTTPRequestHandler):
 
     # ------------------------------------------------------------ API handlers
 
+    def client_ip(self) -> str:
+        """The address this request came from, with the IPv6 wrapper that an
+        IPv4 client gets on a dual-stack socket taken off."""
+        ip = (self.client_address[0] or "") if self.client_address else ""
+        return ip[7:] if ip.startswith("::ffff:") else ip
+
     def is_local_client(self) -> bool:
         """Purpose: true when this request came from the machine the server is
         running on, whether it asked for localhost or for the LAN address.
         Used to keep host-only furniture off the visitors' screens."""
-        ip = (self.client_address[0] or "") if self.client_address else ""
-        if ip.startswith("::ffff:"):          # IPv4 arriving on an IPv6 socket
-            ip = ip[7:]
+        ip = self.client_ip()
         if ip.startswith("127.") or ip == "::1":
             return True
         return ip in getattr(self.server, "local_addresses", set())
+
+    def is_organiser(self) -> bool:
+        """Purpose: true when this request may *run* the event -- draw the
+        bracket, start a match, call a no-show, abort, take someone else's
+        entry out.  Entering, playing and watching are open to the room; the
+        buttons that decide when a match begins are not, or the first team to
+        find the page could start every match on the projector.
+
+        The organiser is the machine the server runs on.  --controls-from adds
+        another (the laptop you project from), and --open-controls goes back to
+        anybody who can reach the page."""
+        if getattr(self.server, "open_controls", False):
+            return True
+        if self.is_local_client():
+            return True
+        return self.client_ip() in getattr(self.server, "organiser_addresses", set())
+
+    def require_organiser(self, what: str) -> None:
+        """Raises 403 unless this request may run the event.  `what` finishes
+        the sentence "only the machine running the server can ...", so it reads
+        as an explanation rather than a refusal."""
+        if not self.is_organiser():
+            raise ApiError(403, f"only the machine running the server can {what} "
+                                f"(this is {self.client_ip() or 'another device'}; "
+                                f"start the server with --open-controls to let anyone)")
 
     def api_health(self) -> None:
         """GET /api/health -> {"ok": true, "games": n, "lobby_url": "http://10.1.2.3:8000/"}
@@ -766,7 +795,8 @@ class Handler(BaseHTTPRequestHandler):
                          "tournaments": len(self.server.store.tournaments), "time": time.time(),
                          "lobby_url": getattr(self.server, "public_url", ""),
                          "uploads": bool(self.server.store.uploads_dir),
-                         "local": self.is_local_client()})
+                         "local": self.is_local_client(),
+                         "organiser": self.is_organiser()})
 
     def api_pause(self, id: str) -> None:
         """POST /api/games/{id}/pause -> state
@@ -1132,7 +1162,8 @@ class Handler(BaseHTTPRequestHandler):
     def api_create_tournament(self) -> None:
         """POST /api/tournaments {stones, cards, time_limit?, label?, bot_delay?} -> bracket (201)
         Every match of the tournament uses these settings.  bot_delay is the
-        pause server-run bots take before each move (default 0.5 s)."""
+        pause after each move, so a room can follow the play (default 1.5 s;
+        0 plays a whole match in a blink)."""
         stones = self.int_param("stones", lo=1, hi=MAX_STONES)
         cards = self.int_param("cards", lo=1, hi=MAX_CARDS)
         raw_limit = self.param("time_limit", DEFAULT_TIME_LIMIT)
@@ -1143,7 +1174,7 @@ class Handler(BaseHTTPRequestHandler):
         if not (1 <= time_limit <= 24 * 3600):
             raise ApiError(400, "time_limit must be between 1 and 86400 seconds")
         label = str(self.param("label", "") or "")
-        delay = self.float_param("bot_delay", 0.5, 0.0, 30.0)
+        delay = self.float_param("bot_delay", 1.5, 0.0, 30.0)
         try:
             t = self.server.store.create_tournament(stones, cards, time_limit, label, delay)
         except ValueError as exc:
@@ -1195,7 +1226,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def api_leave_tournament(self, id: str) -> None:
         """POST /api/tournaments/{id}/leave (token, or {entrant} id for a bot) -> bracket
-        Withdraws before the bracket starts."""
+        Withdraws before the bracket starts.  Your own entry needs your token
+        and can go from anywhere; taking anyone else out is the organiser's."""
         t = self._tournament(id)
         store = self.server.store
         with store.lock:
@@ -1203,7 +1235,10 @@ class Handler(BaseHTTPRequestHandler):
             if entrant is None and self.param("entrant") not in (None, ""):
                 candidate = t.entrants.get(self.int_param("entrant", lo=1))
                 if candidate is not None and candidate.is_bot:
-                    entrant = candidate       # a bot has no owner: anyone may remove it
+                    # a bot and an uploaded strategy have no token to prove
+                    # ownership, so the organiser's machine stands in for one
+                    self.require_organiser("take an entry out of the bracket")
+                    entrant = candidate
             if entrant is None:
                 raise ApiError(401, "missing or unknown token")
             try:
@@ -1215,7 +1250,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def api_start_tournament(self, id: str) -> None:
         """POST /api/tournaments/{id}/start -> bracket.  Draws the bracket and
-        creates the first games.  No auth: classroom tool."""
+        creates the first games.  The organiser's machine only."""
+        self.require_organiser("draw the bracket")
         t = self._tournament(id)
         try:
             self.server.store.start_tournament(t)
@@ -1258,7 +1294,9 @@ class Handler(BaseHTTPRequestHandler):
         any server-run entrants down.  Matches never start themselves, so the
         organiser decides when each one begins.  409 if the match is not
         ready, is already decided, or another match is still being played.
-        No authentication: classroom tool, like start and walkover."""
+        The organiser's machine only: a match begins when the room is ready
+        for it, not when the quickest team on the page presses the button."""
+        self.require_organiser("start a match")
         t = self._tournament(id)
         store = self.server.store
         round_number = self.int_param("round", lo=1)
@@ -1274,7 +1312,8 @@ class Handler(BaseHTTPRequestHandler):
     def api_walkover(self, id: str) -> None:
         """POST /api/tournaments/{id}/walkover {round, match, winner} -> bracket
         Hands an undecided match to entrant `winner` (its id); a game in
-        progress is aborted.  For no-shows.  No auth: classroom tool."""
+        progress is aborted.  For no-shows.  The organiser's machine only."""
+        self.require_organiser("decide a match")
         t = self._tournament(id)
         round_number = self.int_param("round", lo=1)
         index = self.int_param("match", lo=0)
@@ -1287,7 +1326,9 @@ class Handler(BaseHTTPRequestHandler):
         self._send_tournament(t)
 
     def api_abort_tournament(self, id: str) -> None:
-        """POST /api/tournaments/{id}/abort {reason?} -> bracket.  No auth."""
+        """POST /api/tournaments/{id}/abort {reason?} -> bracket.  The
+        organiser's machine only."""
+        self.require_organiser("abort the tournament")
         t = self._tournament(id)
         self.server.store.abort_tournament(t, str(self.param("reason", "") or "aborted by the architects")[:120])
         self.log_message("tournament %s aborted", t.id)
@@ -1326,10 +1367,16 @@ class CardNimServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self, addr, store: GameStore, quiet: bool = False, public_url: str = "") -> None:
+    def __init__(self, addr, store: GameStore, quiet: bool = False, public_url: str = "",
+                 organiser_addresses=None, open_controls: bool = False) -> None:
         super().__init__(addr, Handler)
         self.store = store
         self.quiet = quiet
+        # Who may run the event (draw the bracket, start a match, call a
+        # no-show, abort).  The machine the server runs on always may; these
+        # two say who else does.
+        self.organiser_addresses = set(organiser_addresses or ())
+        self.open_controls = bool(open_controls)
         store.local_url = f"http://127.0.0.1:{self.server_address[1]}"   # for sample clients the server launches
         # the address other devices on the network should use (shown as a QR code)
         host = addr[0] if addr[0] not in ("", "0.0.0.0") else lan_ip()
@@ -1380,6 +1427,12 @@ def main(argv=None) -> int:
                              "and RUN it on this machine")
     parser.add_argument("--uploads-dir", default=os.path.join(REPO_ROOT, "uploads"), metavar="DIR",
                         help="where uploaded strategies are written (default: uploads/)")
+    parser.add_argument("--controls-from", action="append", default=[], metavar="ADDR",
+                        help="another machine that may run the event (draw the bracket, start "
+                             "matches, call no-shows); repeatable. This machine always may")
+    parser.add_argument("--open-controls", action="store_true",
+                        help="let anyone who can reach the page start matches, the way it "
+                             "worked before (default: only the machine running the server)")
     args = parser.parse_args(argv)
 
     results_dir = os.path.abspath(args.results) if args.results else None
@@ -1397,7 +1450,10 @@ def main(argv=None) -> int:
             uploads_dir = None
     store = GameStore(results_dir, [d for d in client_dirs if os.path.isdir(d)], uploads_dir)
     try:
-        server = CardNimServer((args.host, args.port), store, quiet=args.quiet, public_url=args.public_url)
+        server = CardNimServer((args.host, args.port), store, quiet=args.quiet,
+                               public_url=args.public_url,
+                               organiser_addresses=args.controls_from,
+                               open_controls=args.open_controls)
     except OSError as exc:
         print(f"cannot listen on {args.host}:{args.port}: {exc}\n"
               f"another server is probably running; stop it or pass --port {args.port + 1}", file=sys.stderr)
@@ -1413,6 +1469,13 @@ def main(argv=None) -> int:
         print(f"accepting uploaded strategies into {uploads_dir}")
         print("  ! anyone who can reach this server can upload a program and have it RUN here.")
         print("  ! only use this on a network you trust, and stop the server when the round is over.")
+    if args.open_controls:
+        print("  ! anyone who can reach this server can draw brackets and start matches.")
+    elif args.controls_from:
+        print("the event is run from this machine and from " + ", ".join(args.controls_from))
+    else:
+        print("the event is run from this machine only: other devices enter and watch,"
+              " but cannot start matches")
     if args.stones or args.cards:
         if not (args.stones and args.cards):
             parser.error("--stones and --cards go together")

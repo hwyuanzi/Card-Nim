@@ -35,6 +35,12 @@
      somewhere else, ?host=0 forces it off. */
   const hostOverride = new URLSearchParams(location.search).get("host");
   let isHost = hostOverride === "1";
+  /* Whether this screen may run the event: draw the bracket, start a match,
+     take an entry out.  The server decides (it looks at where the request came
+     from) and refuses the calls anyway, so this only keeps buttons off a
+     screen that cannot use them.  ?host=1 can put the organiser's furniture on
+     a projector, but it cannot grant the controls. */
+  let canControl = false;
   let publicUrl = window.location.origin;
   let confirmAbort = false;
   let joinAvatar = 1 + Math.floor(Math.random() * NUM_AVATARS);
@@ -49,6 +55,7 @@
     .then((h) => {
       if (h.lobby_url) publicUrl = h.lobby_url.replace(/\/$/, "");
       if (hostOverride === null) isHost = Boolean(h.local);
+      canControl = Boolean(h.organiser) && hostOverride !== "0";
       lastSignature = null;                 // the QR may have just appeared
       if (t) render();
     })
@@ -555,7 +562,7 @@
       const sub = champ ? "Champion" : out ? `Out in the ${t.rounds[e.eliminated_in - 1].name.toLowerCase()}` :
         t.status === "open" ? (e.kind === "api" ? "program" : e.bot ? "server bot" : "browser") :
         t.status === "running" ? "Still in" : "";
-      const removable = t.status === "open" && (e.bot || (me && me.id === e.id));
+      const removable = t.status === "open" && ((me && me.id === e.id) || (e.bot && canControl));
       return `<div class="entrant${out ? " out" : ""}">
         <img src="${avatarSrc(e.avatar)}" alt="">
         <span class="text"><span class="title">${esc(e.name)}${e.bot ? ' <span class="badge">bot</span>' : ""}${e.kind === "api" ? ' <span class="badge">api</span>' : ""}${me && me.id === e.id ? ' <span class="badge blue">you</span>' : ""}${champ ? ' <span class="badge gold">champion</span>' : ""}</span>
@@ -711,7 +718,7 @@
     let status = "", pill = "";
     if (m.status === "bye") status = "No opponent in this round";
     else if (m.status === "pending") status = "Waiting for the previous round";
-    else if (m.status === "ready") status = anyLive() ? "Next up" : "Ready to start";
+    else if (m.status === "ready") status = anyLive() ? "Next up" : (canControl ? "Ready to start" : "Waiting for the organiser");
     else if (m.status === "waiting") { pill = "waiting"; status = "Waiting for the players to sit down"; }
     else if (m.status === "playing") {
       pill = gs.paused ? "waiting" : "playing";
@@ -725,7 +732,7 @@
     const key = `${m.round}-${m.index}`;
     let actions = "";
     // matches wait for the organiser; only one can be running at a time
-    if (m.status === "ready" && t.status === "running") {
+    if (m.status === "ready" && t.status === "running" && canControl) {
       actions += `<button class="btn blue" type="button" data-play="${key}"${anyLive() ? " disabled title=\"Another match is still being played\"" : ""}><svg class="icon"><use href="#i-play"/></svg>Start match</button>`;
     }
     if (gs && m.status === "playing") {
@@ -899,7 +906,7 @@
         const names = m.slots.map((id) => (entrant(id) || {}).name || "?");
         caption = anyLive()
           ? `<b>${esc(names[0])}</b> v <b>${esc(names[1])}</b> · after the match in progress`
-          : `<b>${esc(names[0])}</b> v <b>${esc(names[1])}</b> · press Start match`;
+          : `<b>${esc(names[0])}</b> v <b>${esc(names[1])}</b> · ${canControl ? "press Start match" : "waiting for the organiser"}`;
         const p = previewMatch(m);
         return `<div class="table-live preview"><div class="table">
             ${podForSeat(p, 1)}${pileHtml(p)}${podForSeat(p, 2)}
@@ -936,7 +943,9 @@
   function tableActionsHtml() {
     const m = shownMatch();
     if (m && !m.game && m.status === "ready" && t.status === "running") {
-      return `<button class="btn blue" type="button" data-play="${m.round}-${m.index}"${anyLive() ? " disabled" : ""}><svg class="icon"><use href="#i-play"/></svg>Start match</button>`;
+      return canControl
+        ? `<button class="btn blue" type="button" data-play="${m.round}-${m.index}"${anyLive() ? " disabled" : ""}><svg class="icon"><use href="#i-play"/></svg>Start match</button>`
+        : "";
     }
     if (!m || !m.game) return "";
     const gs = m.game_state;
@@ -957,8 +966,9 @@
       while (size < Math.max(n, 2)) size *= 2;
       const byes = size - n;
       const rounds = Math.log2(size);
+      const draws = canControl ? "Press Start to draw it." : "The organiser draws it when the room is ready.";
       return `<div class="bracket-empty">${n < 2 ? "The bracket is drawn when the tournament starts. It needs at least two entrants."
-        : `${plural(n, "entrant")}: a bracket of ${size} with ${plural(rounds, "round")}${byes ? `, ${plural(byes, "bye")} in round one` : ""}. Press Start to draw it.`}</div>`;
+        : `${plural(n, "entrant")}: a bracket of ${size} with ${plural(rounds, "round")}${byes ? `, ${plural(byes, "bye")} in round one` : ""}. ${draws}`}</div>`;
     }
     return `<div class="bracket">${t.rounds.map((r) => `<div class="round">
       <div class="round-title">${esc(r.name)}</div>
@@ -976,6 +986,7 @@
 
   function actionsHtml() {
     if (t.status === "open") {
+      if (!canControl) return "";       // a visitor's screen: the organiser starts it
       return `<button class="btn blue" type="button" id="start"${t.entrants.length < 2 ? " disabled" : ""}><svg class="icon"><use href="#i-play"/></svg>Draw the bracket</button>`;
     }
     if (t.status === "running") return "";       // each match has its own buttons
@@ -989,8 +1000,8 @@
     $("title").textContent = title();
     $("server-info").textContent = window.location.host;
     $("entrants-count").textContent = t.entrants.length ? `· ${t.entrants.length}` : "";
-    const signature = [t.version, me && me.id, confirmAbort, publicUrl, isHost, pinned,
-                       celebratingMatch].join("|");
+    const signature = [t.version, me && me.id, confirmAbort, publicUrl, isHost, canControl,
+                       pinned, celebratingMatch].join("|");
     if (signature === lastSignature) return;       // nothing changed: leave the DOM alone
     lastSignature = signature;
 

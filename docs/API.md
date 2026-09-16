@@ -36,7 +36,8 @@ Observers need no token.
 
 ```json
 {"ok": true, "games": 3, "tournaments": 1, "time": 1757470000.1,
- "lobby_url": "http://10.18.4.22:8000/", "local": true, "uploads": false}
+ "lobby_url": "http://10.18.4.22:8000/", "local": true, "organiser": true,
+ "uploads": false}
 ```
 
 `lobby_url` is the address other devices on the network should use; the
@@ -48,6 +49,14 @@ loopback, or one of that machine's own addresses, so it holds whether the
 organiser opened `localhost` or the LAN address. The pages use it to keep the
 organiser's furniture off a visitor's screen: the lobby's create-a-table pane
 and the bracket's join QR. `?host=1` or `?host=0` in the address overrides it.
+
+`organiser` is true when this caller may **run the event**: draw a bracket,
+start a match, call a no-show, abort, take someone else's entry out. That is
+the machine the server runs on, plus any `--controls-from` address, or
+everyone when the server was started with `--open-controls`. The bracket page
+asks before drawing its buttons; the endpoints below enforce it, so hiding
+them is a courtesy, not the lock. Unlike `local`, `?host=1` does not override
+it.
 
 `uploads` says whether the server was started with `--accept-uploads`.
 
@@ -214,7 +223,8 @@ take it. Server-run bots are seated the moment the game is created.
 
 Body: `stones`, `cards`, `time_limit` (optional, default 120), `label`
 (optional), `bot_delay` (optional, seconds between the
-moves of a match, default 0.5). Returns **201** and the [bracket](#bracket-object).
+moves of a match, default 1.5; 0 plays a match in a blink). Returns **201**
+and the [bracket](#bracket-object).
 
 ### `POST /api/tournaments/{id}/join`
 
@@ -232,14 +242,17 @@ seat in every match. Names must be unique (a repeated bot name gets a number).
 ### `POST /api/tournaments/{id}/leave`
 
 Withdraw before the start: the entrant's token, or `entrant` (its id) for a
-server bot. 409 once the bracket has started.
+server bot or an uploaded strategy — those have no token to prove ownership,
+so that form is **403 unless the caller is the organiser**. Your own entry
+goes from anywhere with your token. 409 once the bracket has started.
 
 ### `POST /api/tournaments/{id}/start`
 
 Draws the bracket. **No game is created**: each match is started by hand with
 `POST /play` below, so the organiser decides when each one begins. Byes are
 resolved at once, since there is nothing to play. 409 with fewer than two
-entrants. No authentication: classroom tool.
+entrants. **403 unless the caller is the organiser** (see `organiser` in
+`/api/health`).
 
 ### `GET /api/tournaments/{id}`
 
@@ -286,7 +299,9 @@ Returns the [bracket](#bracket-object).
 Matches never start themselves, and only one runs at a time. **409** when the
 match is a bye, is already decided, is still waiting for the previous round,
 when another match of this tournament is in progress, or when the tournament
-is not running. No authentication: classroom tool.
+is not running. **403 unless the caller is the organiser**: a match begins
+when the room is ready, not when the quickest team on the page presses the
+button.
 
 ### `POST /api/games/{id}/pause`  ·  `POST /api/games/{id}/resume`
 
@@ -302,18 +317,19 @@ return the [state](#state-object) and need no authentication.
 
 Body: `round` (1-based), `match` (0-based index in that round), `winner`
 (entrant id). Hands an undecided match to one side; a game in progress is
-aborted. For no-shows. No authentication.
+aborted. For no-shows. **403 unless the caller is the organiser.**
 
 ### `POST /api/tournaments/{id}/abort`
 
 Ends the tournament with no champion; every unfinished game is aborted.
+**403 unless the caller is the organiser.**
 
 ### Bracket object
 
 ```json
 {
   "id": "Q4RT", "label": "Cup", "status": "running", "aborted": false, "reason": "",
-  "stones": 100, "cards": 25, "time_limit": 120.0, "bot_delay": 0.5,
+  "stones": 100, "cards": 25, "time_limit": 120.0, "bot_delay": 1.5,
   "size": 8, "entrants": [{"id": 1, "name": "Team A", "avatar": 5, "kind": "api",
                            "bot": false, "wins": 1, "eliminated_in": null}, ...],
   "rounds": [

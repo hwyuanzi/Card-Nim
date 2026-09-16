@@ -103,11 +103,11 @@ class Tournament:
     """A bracket of Card Nim games with the same s, k and clock."""
 
     def __init__(self, stones: int, cards: int, time_limit: float, label: str = "",
-                 tournament_id: Optional[str] = None, bot_delay: float = 0.5) -> None:
+                 tournament_id: Optional[str] = None, bot_delay: float = 1.5) -> None:
         """Purpose: create an empty tournament that is taking entries.
         Inputs:  the game settings every match will use, a label, an optional
-                 fixed id, and the pause (seconds) server-run bots take before
-                 each move so people can follow the games.
+                 fixed id, and the pause (seconds) held after each move so
+                 people can follow the games (default 1.5; 0 for no pause).
         Raises ValueError for out-of-range settings (same limits as Game)."""
         from engine import MAX_CARDS, MAX_STONES   # local import keeps the module header short
         if not (1 <= stones <= MAX_STONES):

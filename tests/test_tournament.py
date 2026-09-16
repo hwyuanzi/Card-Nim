@@ -149,11 +149,17 @@ def test_reserved_seat_opens_for_token_or_name_only():
 
 # ---------------------------------------------------------------- over HTTP
 
+# The server the base_url fixture is running, for the few tests that change a
+# setting on it (who may run the event) rather than talking to it.
+LIVE = {}
+
+
 @pytest.fixture(scope="module")
 def base_url(tmp_path_factory):
     results = tmp_path_factory.mktemp("results")
     store = srv.GameStore(results_dir=str(results))
     server = srv.CardNimServer(("127.0.0.1", 0), store, quiet=True)
+    LIVE["server"] = server
     port = server.server_address[1]
     t = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.1}, daemon=True)
     t.start()
@@ -645,3 +651,119 @@ def test_a_tournament_match_plays_at_a_watchable_speed(base_url):
     # and the waiting is free
     for p in g["players"]:
         assert 60.0 - p["time_remaining"] < 2.0, f"a pause was charged: {p}"
+
+
+# ============================================================ who may run the event
+
+# Entering, playing and watching belong to the room; drawing the bracket and
+# starting a match belong to the machine the server runs on.  Otherwise the
+# first team to find the page starts every match on the projector.
+#
+# Requests in these tests all come from 127.0.0.1, so "a visitor" is made by
+# answering the one question the server asks about them.
+
+@pytest.fixture
+def visitor(monkeypatch):
+    """Make every request look as though it came from another device."""
+    monkeypatch.setattr(srv.Handler, "is_local_client", lambda self: False)
+    monkeypatch.setattr(srv.Handler, "client_ip", lambda self: "10.0.0.9")
+
+
+def two_entrants(base, **settings):
+    """An open tournament with two server bots in it.  Outputs: its id."""
+    body = {"stones": 20, "cards": 6, "time_limit": 60, "bot_delay": 0}
+    body.update(settings)
+    _, t = call(base, "POST", "/api/tournaments", body)
+    for name in ("One", "Two"):
+        call(base, "POST", f"/api/tournaments/{t['id']}/join", {"kind": "greedy", "name": name})
+    return t["id"]
+
+
+def test_a_visitor_cannot_start_the_bracket_or_a_match(base_url, visitor):
+    base, _ = base_url
+    tid = two_entrants(base)
+    status, err = call(base, "POST", f"/api/tournaments/{tid}/start")
+    assert status == 403 and "machine running the server" in err["error"], err
+    status, err = call(base, "POST", f"/api/tournaments/{tid}/play", {"round": 1, "match": 0})
+    assert status == 403, err
+    status, err = call(base, "POST", f"/api/tournaments/{tid}/walkover",
+                       {"round": 1, "match": 0, "winner": 1})
+    assert status == 403, err
+    status, err = call(base, "POST", f"/api/tournaments/{tid}/abort")
+    assert status == 403, err
+    # nothing happened: it is still open, with both entrants
+    _, t = call(base, "GET", f"/api/tournaments/{tid}")
+    assert t["status"] == "open" and len(t["entrants"]) == 2
+
+
+def test_a_visitor_cannot_take_someone_else_out_but_may_withdraw(base_url, visitor):
+    """A team's own entry is theirs wherever they are sitting; another team's
+    is not."""
+    base, _ = base_url
+    tid = two_entrants(base)
+    _, t = call(base, "GET", f"/api/tournaments/{tid}")
+    victim = t["entrants"][0]["id"]
+    status, err = call(base, "POST", f"/api/tournaments/{tid}/leave", {"entrant": victim})
+    assert status == 403, err
+
+    status, mine = call(base, "POST", f"/api/tournaments/{tid}/join", {"name": "Visiting team"})
+    assert status == 200, mine
+    status, _ = call(base, "POST", f"/api/tournaments/{tid}/leave", token=mine["token"])
+    assert status == 200
+    _, t = call(base, "GET", f"/api/tournaments/{tid}")
+    assert [e["name"] for e in t["entrants"]] == ["One", "Two"]
+
+
+def test_a_visitor_may_still_enter_watch_and_play(base_url, visitor):
+    """The gate is on running the event, not on taking part in it."""
+    base, _ = base_url
+    tid = two_entrants(base)
+    status, joined = call(base, "POST", f"/api/tournaments/{tid}/join", {"name": "Away team"})
+    assert status == 200, joined
+    assert call(base, "GET", f"/api/tournaments/{tid}")[0] == 200
+    assert call(base, "GET", "/api/tournaments")[0] == 200
+    assert call(base, "GET", f"/api/tournaments/{tid}/getstate?timeout=0",
+                token=joined["token"])[0] == 200
+    assert call(base, "POST", "/api/games", {"stones": 10, "cards": 4})[0] == 201
+
+
+def test_the_page_is_told_whether_it_may_run_the_event(base_url, visitor):
+    """The bracket page hides the buttons it cannot use; /api/health is where
+    it finds out."""
+    base, _ = base_url
+    _, health = call(base, "GET", "/api/health")
+    assert health["organiser"] is False and health["local"] is False
+
+
+def test_the_machine_running_the_server_still_runs_the_event(base_url):
+    base, _ = base_url
+    _, health = call(base, "GET", "/api/health")
+    assert health["organiser"] is True
+    tid = two_entrants(base)
+    assert call(base, "POST", f"/api/tournaments/{tid}/start")[0] == 200
+    assert call(base, "POST", f"/api/tournaments/{tid}/abort")[0] == 200
+
+
+def test_another_machine_can_be_given_the_controls(base_url, monkeypatch):
+    """--controls-from: the laptop the bracket is projected from runs the
+    event without the server moving to it."""
+    base, _ = base_url
+    monkeypatch.setattr(srv.Handler, "is_local_client", lambda self: False)
+    monkeypatch.setattr(srv.Handler, "client_ip", lambda self: "10.0.0.9")
+    tid = two_entrants(base)
+    assert call(base, "POST", f"/api/tournaments/{tid}/start")[0] == 403
+
+    monkeypatch.setattr(LIVE["server"], "organiser_addresses", {"10.0.0.9"})
+    assert call(base, "POST", f"/api/tournaments/{tid}/start")[0] == 200
+
+
+def test_open_controls_puts_it_back_the_way_it_was(base_url, monkeypatch):
+    base, _ = base_url
+    monkeypatch.setattr(srv.Handler, "is_local_client", lambda self: False)
+    monkeypatch.setattr(srv.Handler, "client_ip", lambda self: "10.0.0.9")
+    tid = two_entrants(base)
+    assert call(base, "POST", f"/api/tournaments/{tid}/start")[0] == 403
+    monkeypatch.setattr(LIVE["server"], "open_controls", True)
+    assert call(base, "POST", f"/api/tournaments/{tid}/start")[0] == 200
+    _, health = call(base, "GET", "/api/health")
+    assert health["organiser"] is True
