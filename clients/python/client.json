@@ -1,0 +1,13 @@
+{
+  "language": "Python",
+  "label": "Python client (sample strategy)",
+  "file": "client.py",
+  "edit": "brain(stones, my_cards, opp_cards, state)",
+  "note": "wins if it can, avoids giving an exact match, else the smallest fitting card",
+  "badge": "Py",
+  "color": "#3572a5",
+  "tools": {"python": "python3"},
+  "run": ["{python}", "{file}", "--bot", "greedy"],
+  "command": "python3 {file} --game ID --name NAME --bot greedy",
+  "server_bots": true
+}

@@ -1,0 +1,12 @@
+{
+  "language": "TypeScript",
+  "label": "TypeScript client (Deno, sample strategy)",
+  "file": "client.ts",
+  "edit": "chooseCard(stones, myCards, oppCards)",
+  "note": "wins if it can, avoids giving an exact match, else the smallest fitting card",
+  "badge": "TS",
+  "color": "#3178c6",
+  "tools": {"deno": "deno"},
+  "run": ["{deno}", "run", "--quiet", "--allow-net", "--allow-env", "{file}"],
+  "command": "deno run --allow-net --allow-env {file} --game ID --name NAME"
+}

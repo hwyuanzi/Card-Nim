@@ -1,0 +1,15 @@
+{
+  "language": "Java",
+  "label": "Java client (sample strategy)",
+  "file": "Client.java",
+  "edit": "chooseCard(stones, myCards, oppCards)",
+  "note": "wins if it can, avoids giving an exact match, else the smallest fitting card",
+  "badge": "Ja",
+  "color": "#b07219",
+  "tools": {"javac": "javac", "java": "java"},
+  "verify": {"javac": ["-version"], "java": ["-version"]},
+  "build": ["{javac}", "-d", "{dir}/out", "{file}"],
+  "output": "out/Client.class",
+  "run": ["{java}", "-cp", "{dir}/out", "Client"],
+  "command": "javac {file} -d out && java -cp out Client --game ID --name NAME"
+}

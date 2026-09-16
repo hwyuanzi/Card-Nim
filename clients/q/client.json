@@ -1,0 +1,13 @@
+{
+  "language": "q",
+  "label": "q/kdb+ client (sample strategy)",
+  "file": "client.q",
+  "edit": "choose_card[stones;mine;theirs]",
+  "note": "wins if it can, avoids giving an exact match, else the smallest fitting card",
+  "badge": "q",
+  "color": "#1f6f8b",
+  "tools": {"q": "q"},
+  "run": ["{q}", "{file}", "-q"],
+  "args": "env",
+  "command": "q {file} -game ID -name NAME"
+}

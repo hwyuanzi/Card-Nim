@@ -1,0 +1,12 @@
+{
+  "language": "Shell",
+  "label": "Shell client (curl + awk)",
+  "file": "client.sh",
+  "edit": "choose_card() (an awk one-liner)",
+  "note": "wins if it can, avoids giving an exact match, else the smallest fitting card",
+  "badge": "sh",
+  "color": "#4d4d4d",
+  "tools": {"sh": "sh", "curl": "curl", "awk": "awk"},
+  "run": ["{sh}", "{file}"],
+  "command": "sh {file} --game ID --name NAME"
+}

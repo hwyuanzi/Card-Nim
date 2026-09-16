@@ -1,0 +1,14 @@
+{
+  "language": "C",
+  "label": "C client (sample strategy)",
+  "file": "client.c",
+  "edit": "choose_card(stones, mine, n_mine, theirs, n_theirs)",
+  "note": "wins if it can, avoids giving an exact match, else the smallest fitting card",
+  "badge": "C",
+  "color": "#555555",
+  "tools": {"cc": ["cc", "gcc", "clang"]},
+  "build": ["{cc}", "-O2", "-o", "{out}", "{file}"],
+  "output": "client",
+  "run": ["{out}"],
+  "command": "cc -O2 {file} -o client && ./client --game ID --name NAME"
+}

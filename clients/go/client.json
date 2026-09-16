@@ -1,0 +1,15 @@
+{
+  "language": "Go",
+  "label": "Go client (sample strategy)",
+  "file": "client.go",
+  "edit": "chooseCard(stones, mine, theirs)",
+  "note": "wins if it can, avoids giving an exact match, else the smallest fitting card",
+  "badge": "Go",
+  "color": "#00add8",
+  "tools": {"go": "go"},
+  "build": ["{go}", "build", "-o", "{out}", "{file}"],
+  "output": "player",
+  "run": ["{out}"],
+  "env": {"GOFLAGS": "-mod=mod"},
+  "command": "go build -o client {file} && ./client --game ID --name NAME"
+}

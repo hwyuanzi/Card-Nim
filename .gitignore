@@ -1,0 +1,13 @@
+__pycache__/
+.pytest_cache/
+results/
+# compiled clients: the server rebuilds each from source when it is stale
+clients/cpp/client
+clients/c/client
+clients/go/player
+clients/rust/player
+clients/java/*.class
+out/
+.DS_Store
+private/
+uploads/

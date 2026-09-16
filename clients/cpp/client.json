@@ -1,0 +1,14 @@
+{
+  "language": "C++",
+  "label": "C++ client (sample strategy)",
+  "file": "client.cpp",
+  "edit": "choose_card(stones, my_cards, opp_cards)",
+  "note": "wins if it can, avoids giving an exact match, else the smallest fitting card",
+  "badge": "C++",
+  "color": "#f34b7d",
+  "tools": {"cxx": ["g++", "clang++"]},
+  "build": ["{cxx}", "-std=c++17", "-O2", "{file}", "-o", "{out}"],
+  "output": "client",
+  "run": ["{out}"],
+  "command": "g++ -std=c++17 -O2 {file} -o client && ./client --game ID --name NAME"
+}

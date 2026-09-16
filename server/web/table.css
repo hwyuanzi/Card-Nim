@@ -1,0 +1,352 @@
+/* The Card Nim table: the felt stadium, the seat pods, the hands and the pile.
+
+   Shared by the board (game.html) and the bracket (tournament.html), so a
+   match drawn in the bracket is literally the same table, not a lookalike.
+   The bracket wraps it in .table-mini, which scales the whole thing down -
+   nothing in here changes between the two pages.
+
+   Every token the rules below need is declared here, so the file stands on
+   its own; style.css carries the same values for the rest of the board. */
+
+:root {
+  --text: #1d1d1f;
+  --red: #ff3b30;
+  --accent: #1d1d1f;
+  --felt: #7a2733;
+  --felt-2: #55181f;
+  --felt-edge: #3a0f14;
+  --field: #eeeef1;
+  --font-num: "Geomini", -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
+  --gold: #d6b25e;
+  --gold-2: #a98536;
+  --green: #34c759;
+  --hairline: #e3e3e8;
+  --muted: #6e6e73;
+  --panel: #ffffff;
+  --rail: #c9a24a;
+  --s1: #0a7aff;
+  --s2: #ff9500;
+  --t-panel: 200ms;
+  --t-press: 110ms;
+  --t-progress: 350ms;
+  --white: #ffffff;
+}
+
+/* the table: a stadium of felt inside a brass rail.  The rail is painted
+   with box-shadow rings so it follows the rounded shape. */
+.table {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  margin: 54px 18px 62px;
+  padding: 72px 52px;
+  border-radius: 200px;
+  background:
+    radial-gradient(ellipse at 50% 40%, #8a2f3c 0, var(--felt) 45%, var(--felt-2) 85%, var(--felt-edge) 100%);
+  box-shadow:
+    0 0 0 3px #2a0b0f,
+    0 0 0 12px var(--rail),
+    0 0 0 13px #8a6a2a,
+    0 0 0 14px rgba(0, 0, 0, 0.12),
+    0 24px 48px rgba(0, 0, 0, 0.22),
+    inset 0 0 0 2px rgba(0, 0, 0, 0.55),
+    inset 0 0 70px rgba(0, 0, 0, 0.55);
+}
+.table::after {
+  /* felt inner line, like the betting line on a real table */
+  content: "";
+  position: absolute;
+  inset: 22px;
+  border-radius: 180px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  pointer-events: none;
+}
+.table > * { position: relative; z-index: 1; }
+/* pods after the game */
+.player.winner .pod { box-shadow: 0 10px 24px rgba(0, 0, 0, 0.25), 0 0 0 3px var(--gold); }
+.player.winner .avatar { border-color: var(--gold) !important; box-shadow: 0 0 0 2px var(--panel), 0 0 18px rgba(214, 178, 94, 0.8) !important; }
+.player.loser .pod { opacity: 0.72; }
+.player-name .crown { color: var(--gold-2); font-size: 12px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
+
+@media (max-width: 700px) {
+  .winner-card { min-width: 0; width: 88%; padding: 16px 14px 14px; }
+  .winner-card .big-avatar { width: 72px; height: 72px; }
+  .winner-card h2 { font-size: 22px; }
+}
+/* player block: pod + hand */
+.player { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+.player.s2 { flex-direction: column-reverse; }
+.player-head { display: flex; justify-content: center; }
+.player.s1 .player-head { margin-top: -118px; margin-bottom: 6px; }
+.player.s2 .player-head { margin-bottom: -118px; margin-top: 6px; }
+/* seat pods: white cards sitting on the rail */
+.pod {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 250px;
+  max-width: 100%;
+  padding: 8px 16px 8px 8px;
+  border-radius: 14px;
+  background: var(--panel);
+  border: 1px solid var(--hairline);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.25), 0 1px 2px rgba(0, 0, 0, 0.08);
+}
+.avatar {
+  width: 58px;
+  height: 58px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--muted);
+  background: var(--field);
+  border: 3px solid var(--hairline);
+  box-shadow: 0 0 0 2px var(--panel);
+  flex: none;
+  overflow: hidden;
+  transition: border-color var(--t-panel) ease, box-shadow var(--t-panel) ease;
+}
+.player.s1 .avatar { border-color: var(--s1); }
+.player.s2 .avatar { border-color: var(--s2); }
+.player.on-turn .avatar { box-shadow: 0 0 0 2px var(--panel), 0 0 0 5px var(--accent); }
+.avatar img {
+  width: 82%;
+  height: 82%;
+  object-fit: contain;
+  image-rendering: pixelated;
+  display: block;
+}
+.pod { position: relative; }
+.pod-text { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+/* hands: small playing cards (unchanged) */
+.player .hand { justify-content: center; }
+.player .hand, .player .hand-note, .player .seat-join { max-width: 100%; }
+.hand { display: flex; flex-wrap: wrap; gap: 6px; }
+.card {
+  appearance: none;
+  position: relative;
+  width: 42px;
+  height: 58px;
+  padding: 0;
+  border: 1px solid #b9b9b9;
+  border-radius: 5px;
+  background: linear-gradient(180deg, #ffffff, #efefec);
+  color: #17191d;
+  font-family: var(--font-num);
+  font-weight: 700;
+  font-size: 20px;
+  line-height: 1;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.55);
+  cursor: default;
+  transition: transform var(--t-press) ease, box-shadow var(--t-press) ease, filter var(--t-press) ease;
+}
+.card::after {
+  /* the suit mark in the corner: a spade */
+  content: "\2660";
+  position: absolute;
+  right: 4px;
+  bottom: 2px;
+  font-family: "Segoe UI Symbol", "Apple Symbols", serif;
+  font-size: 12px;
+  line-height: 1;
+  color: #17191d;
+  opacity: 0.85;
+}
+.hand.dense .card { width: 32px; height: 44px; font-size: 15px; border-radius: 4px; }
+.hand.dense .card::after { font-size: 9px; right: 3px; bottom: 2px; }
+.hand.dense { gap: 5px; }
+.hand.very-dense .card { width: 25px; height: 34px; font-size: 12px; border-radius: 3px; }
+.hand.very-dense .card::after { display: none; }
+.hand.very-dense { gap: 3px; }
+/* played cards show their back */
+.card.played {
+  color: transparent;
+  border-color: #23262c;
+  background:
+    repeating-linear-gradient(45deg, rgba(255, 255, 255, 0.06) 0 2px, transparent 2px 6px),
+    repeating-linear-gradient(-45deg, rgba(255, 255, 255, 0.06) 0 2px, transparent 2px 6px),
+    linear-gradient(180deg, #3b4049, #24272d);
+  box-shadow: inset 0 0 0 2px #14161a, 0 1px 2px rgba(0, 0, 0, 0.6);
+}
+.card.played::after { color: rgba(255, 255, 255, 0.35); }
+.card.played::before {
+  content: attr(data-card);
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: rgba(255, 255, 255, 0.28);
+  font-size: 0.8em;
+  text-decoration: line-through;
+}
+.card.last { box-shadow: 0 0 0 2px var(--gold), 0 0 12px rgba(214, 178, 94, 0.5); }
+.card.last::before { color: var(--gold); text-decoration: none; }
+
+.card.can-play { cursor: pointer; border-color: #fff; box-shadow: 0 3px 8px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.5); }
+.card.can-play:hover { transform: translateY(-6px); filter: brightness(1.04); box-shadow: 0 10px 18px rgba(0, 0, 0, 0.6), 0 0 0 2px var(--gold); }
+.card.can-play:active { transform: translateY(-2px) scale(0.98); }
+.card.too-big { background: #7d8088; color: #3a3d44; border-color: #5d6069; box-shadow: none; }
+.card.too-big::after { color: #3a3d44; }
+.card.exact { box-shadow: 0 0 0 2px var(--green), 0 0 16px rgba(52, 199, 89, 0.7); }
+
+.hand-note { font-size: 12px; font-weight: 500; color: #f0e2bd; text-align: center; min-height: 1.3em; text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6); }
+/* pile in the middle of the felt (unchanged) */
+.pile { text-align: center; padding: 6px 0; }
+.pile .count-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 12px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.45);
+  border: 1px solid rgba(214, 178, 94, 0.35);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--gold);
+  margin-bottom: 4px;
+}
+.pile .count-label b { color: var(--white); font-weight: 700; }
+.pile .count {
+  font-family: var(--font-num);
+  font-size: clamp(64px, 11vw, 120px);
+  font-weight: 800;
+  line-height: 0.95;
+  letter-spacing: -0.02em;
+  color: var(--white);
+  text-shadow: 0 3px 0 rgba(0, 0, 0, 0.35), 0 8px 24px rgba(0, 0, 0, 0.6);
+  margin: 2px 0 6px;
+}
+.pile .count.bump { animation: pop 320ms ease-out; }
+.pile .bar { max-width: 320px; margin: 0 auto 12px; height: 8px; background: rgba(0, 0, 0, 0.55); }
+
+.pebbles { display: flex; flex-direction: column; align-items: center; gap: 5px; }
+.prow { display: flex; gap: 8px; }
+.pgroup { display: flex; gap: 3px; align-items: center; }
+.pebble {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, #ffffff, #cfcfcf 55%, #8d8d8d);
+  border: 1px solid #3a3a3a;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.7);
+  transition: background var(--t-progress) ease, border-color var(--t-progress) ease, opacity var(--t-progress) ease;
+}
+.pebble.gone { background: transparent; border-color: rgba(255, 255, 255, 0.18); box-shadow: none; }
+.pebble.just-gone { background: radial-gradient(circle at 35% 30%, #fff1c0, var(--gold) 60%, var(--gold-2)); border-color: #5c4713; }
+.pebbles.many .pebble { width: 9px; height: 9px; }
+.pebbles.many .prow { gap: 6px; }
+
+/* The table needs these too: the clock bar and the gold pile bar, the seat
+   tag, and the pod's clock and card count. They used to sit in style.css,
+   so the bracket fell through to lobby.css and drew a black bar where the
+   board draws a green or gold one. */
+
+.bar {
+  position: relative;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--hairline);
+  overflow: hidden;
+}
+.bar-fill {
+  height: 100%;
+  width: 0;
+  border-radius: 3px;
+  background: var(--green);
+  transition: width var(--t-progress) linear;
+}
+.bar.gold .bar-fill { background: linear-gradient(180deg, #f1d98c, var(--gold) 50%, var(--gold-2)); }
+.bar.red .bar-fill { background: var(--red); }
+.bar.thin { height: 4px; }
+.bar-label { display: none; }
+
+.seat-tag {
+  display: inline-grid;
+  place-items: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--white);
+}
+.seat-tag.s1 { background: var(--s1); }
+.seat-tag.s2 { background: var(--s2); }
+
+.clock-wrap { display: flex; align-items: center; gap: 10px; }
+.clock-wrap .bar { width: 110px; }
+.pod .clock {
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--text);
+  line-height: 1;
+  min-width: 72px;
+}
+.pod .clock.low { color: var(--red); }
+.cards-left { font-size: 12px; color: var(--muted); }
+
+/* the finish: fireworks over the felt and a winner card in the middle */
+.fireworks {
+  position: absolute !important;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  pointer-events: none;
+  z-index: 3 !important;
+}
+.winner-card {
+  position: absolute !important;
+  inset: 0;
+  margin: auto;
+  width: fit-content;
+  height: fit-content;
+  z-index: 4 !important;
+  min-width: 280px;
+  max-width: min(440px, 90%);
+  padding: 20px 24px 18px;
+  text-align: center;
+  background: var(--panel);
+  border: 1px solid var(--hairline);
+  border-radius: 16px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45), 0 0 0 6px rgba(214, 178, 94, 0.35);
+  animation: pop 420ms cubic-bezier(0.2, 0.9, 0.3, 1.25) both;
+}
+.winner-card .big-avatar {
+  width: 92px;
+  height: 92px;
+  margin: 0 auto 10px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: var(--field);
+  border: 4px solid var(--gold);
+  box-shadow: 0 0 0 3px var(--panel), 0 0 28px rgba(214, 178, 94, 0.8);
+  overflow: hidden;
+  font-size: 34px;
+  font-weight: 700;
+  color: var(--muted);
+}
+.winner-card .big-avatar img { width: 82%; height: 82%; object-fit: contain; image-rendering: pixelated; }
+.winner-card.s1 .big-avatar { border-color: var(--s1); box-shadow: 0 0 0 3px var(--panel), 0 0 28px rgba(10, 122, 255, 0.6); }
+.winner-card.s2 .big-avatar { border-color: var(--s2); box-shadow: 0 0 0 3px var(--panel), 0 0 28px rgba(255, 149, 0, 0.6); }
+.winner-card.none .big-avatar { border-color: var(--hairline); box-shadow: 0 0 0 3px var(--panel); }
+.winner-card .label {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--gold-2);
+}
+.winner-card.none .label { color: var(--muted); }
+.winner-card h2 { font-size: 26px; font-weight: 700; letter-spacing: -0.02em; margin: 2px 0 4px; word-break: break-word; }
+.winner-card .why { color: var(--muted); font-size: 13px; margin-bottom: 14px; }
+.winner-card .actions { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }

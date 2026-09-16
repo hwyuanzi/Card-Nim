@@ -1,0 +1,12 @@
+{
+  "language": "Perl",
+  "label": "Perl client (sample strategy)",
+  "file": "client.pl",
+  "edit": "choose_card(stones, mine, theirs)",
+  "note": "wins if it can, avoids giving an exact match, else the smallest fitting card",
+  "badge": "Pl",
+  "color": "#0298c3",
+  "tools": {"perl": "perl"},
+  "run": ["{perl}", "{file}"],
+  "command": "perl {file} --game ID --name NAME"
+}

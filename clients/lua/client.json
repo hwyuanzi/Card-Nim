@@ -1,0 +1,12 @@
+{
+  "language": "Lua",
+  "label": "Lua client (sample strategy)",
+  "file": "client.lua",
+  "edit": "choose_card(stones, mine, theirs)",
+  "note": "wins if it can, avoids giving an exact match, else the smallest fitting card",
+  "badge": "Lua",
+  "color": "#000080",
+  "tools": {"lua": ["lua", "lua5.4", "luajit"], "curl": "curl"},
+  "run": ["{lua}", "{file}"],
+  "command": "lua {file} --game ID --name NAME"
+}

@@ -1,0 +1,14 @@
+{
+  "language": "Rust",
+  "label": "Rust client (sample strategy)",
+  "file": "client.rs",
+  "edit": "choose_card(stones, mine, theirs)",
+  "note": "wins if it can, avoids giving an exact match, else the smallest fitting card",
+  "badge": "Rs",
+  "color": "#dea584",
+  "tools": {"rustc": "rustc"},
+  "build": ["{rustc}", "-O", "--edition", "2021", "-o", "{out}", "{file}"],
+  "output": "player",
+  "run": ["{out}"],
+  "command": "rustc -O {file} -o client && ./client --game ID --name NAME"
+}

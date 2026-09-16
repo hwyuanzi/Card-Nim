@@ -1,0 +1,12 @@
+{
+  "language": "JavaScript",
+  "label": "Node.js client (sample strategy)",
+  "file": "client.js",
+  "edit": "chooseCard(stones, myCards, oppCards)",
+  "note": "wins if it can, avoids giving an exact match, else the smallest fitting card",
+  "badge": "JS",
+  "color": "#b8a90a",
+  "tools": {"node": "node"},
+  "run": ["{node}", "{file}"],
+  "command": "node {file} --game ID --name NAME"
+}

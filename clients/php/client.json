@@ -1,0 +1,12 @@
+{
+  "language": "PHP",
+  "label": "PHP client (sample strategy)",
+  "file": "client.php",
+  "edit": "choose_card(stones, mine, theirs)",
+  "note": "wins if it can, avoids giving an exact match, else the smallest fitting card",
+  "badge": "PHP",
+  "color": "#777bb4",
+  "tools": {"php": "php"},
+  "run": ["{php}", "{file}"],
+  "command": "php {file} --game ID --name NAME"
+}
